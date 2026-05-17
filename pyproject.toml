@@ -41,6 +41,16 @@ dependencies = [
     "yt-dlp>=2025.1.0",
 ]
 
+[project.optional-dependencies]
+# Local on-device pipeline (Mac M-series / generic CPU). Install with:
+#   uv sync --extra local
+# or
+#   uv pip install -e ".[local]"
+local = [
+    "faster-whisper>=1.1.0",   # local Whisper via CTranslate2 (MIT)
+    "supertonic>=0.1.0",       # on-device 31-lang TTS (MIT)
+]
+
 [project.scripts]
 violin = "main:main"
 violin-api = "run_api:main"

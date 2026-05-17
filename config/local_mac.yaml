@@ -1,0 +1,62 @@
+# Mac M-series preset — minimal cloud surface.
+#
+# STT  : faster-whisper local (Whisper Large v3, CTranslate2, int8 on CPU)
+# LLM  : Ollama Cloud — DeepSeek V3.1 (671B MoE) for translation + chat
+# TTS  : Supertonic 3 local (ONNX, 31 languages incl. Vietnamese)
+#
+# Required env vars:
+#   OLLAMA_API_KEY=...   (get from https://ollama.com/settings/keys)
+#
+# Run with:
+#   uv sync --extra local
+#   uv run main.py video.mp4 video_vi.mp4 --language Vietnamese --config config/local_mac.yaml
+
+models:
+  transcription:
+    provider: faster-whisper
+    model: large-v3-turbo                 # ~5× faster than large-v3, near-equivalent quality. Alternatives: large-v3 / medium / small / base
+  translation:
+    provider: ollama
+    model: deepseek-v4-flash       # Ollama Cloud DeepSeek V3.1 MoE
+  tts:
+    provider: supertonic
+    model: supertonic-3
+  chat:
+    provider: ollama                      # DeepSeek V3.1 is text-only — video Q&A will use captions only, no frame sampling
+    model: deepseek-v4-flash
+
+# ── faster-whisper local tuning ─────────────────────────────
+transcription:
+  chunk_seconds: 600
+  parallel_workers: 1                     # local Whisper saturates the CPU — keep serial
+  local_device: auto                      # "auto" | "cpu" | "cuda" — auto picks CPU on Apple Silicon
+  local_compute_type: auto                # "auto" | "int8" | "float16" | "float32" — int8 is the M-series sweet spot
+
+# ── Translation tuning (smaller batches for Ollama Cloud) ───
+translation:
+  batch_size: 16                          # 64 default is too large for single 671B/large-MoE request — 16 gives ~30s/batch on flash, ~60s on full
+
+# ── Supertonic local tuning ─────────────────────────────────
+supertonic:
+  total_steps: 8                          # 5 (low) … 12 (high) quality, default 8
+  speed: 1.3                              # pre-speed TTS so merger doesn't need heavy atempo (which distorts voice)
+  inject_breath: true                     # heuristically insert <breath> tags for natural prosody on long segments
+
+# ── TTS workers — serialize when running local ──────────────
+tts:
+  workers: 1                              # Supertonic synthesis is already faster-than-real-time on M-series; no need to parallelize
+  tail_silence_ms: 120
+  sentence_tail_silence_ms: 250
+
+# ── Video alignment — STRICT TIMEBOX mode ───────────────────
+# Each TTS segment must fit exactly within the source-audio time slot from
+# Whisper. Video is NEVER stretched. If TTS overruns the slot, the merger
+# atempos the dub up to `max_audio_speedup` (and truncates beyond that).
+# If TTS finishes early, the slot is silence-padded so the next segment
+# starts exactly when the source did.
+merge_video:
+  speed_clamp_min: 1.0                    # NEVER slow video below original
+  speed_clamp_max: 1.0                    # NEVER speed video above original — keep frames 1:1 with source
+  max_audio_speedup: 1.4                  # gentle atempo only — TTS is already pre-sped via supertonic.speed=1.3
+  max_freeze_s: 0.0                       # NO freeze frames
+  voiceover_volume: 0.02                  # original audio bed under dub — 2%

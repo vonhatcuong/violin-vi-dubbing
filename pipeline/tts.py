@@ -29,6 +29,8 @@ def _backend(provider: str | None = None):
         from . import tts_elevenlabs as _imp
     elif p == "openai":
         from . import tts_openai as _imp
+    elif p == "supertonic":
+        from . import tts_supertonic as _imp
     else:
         from . import tts_together as _imp
     return _imp
@@ -57,6 +59,13 @@ def _make_client(
     openai_api_key: str | None = None,
 ):
     """Build the right SDK client for the active provider, honoring caller-supplied API keys."""
+    if provider == "supertonic":
+        # Local on-device TTS — no API key. Returns the shared Supertonic
+        # TTS instance, which is what tts_supertonic.synthesize_segment uses
+        # as its `client` argument.
+        from . import tts_supertonic as _sup
+        return _sup.get_shared_tts()
+
     if provider == "elevenlabs":
         from elevenlabs.client import ElevenLabs
         api_key = elevenlabs_api_key or os.environ.get("ELEVENLABS_API_KEY")
