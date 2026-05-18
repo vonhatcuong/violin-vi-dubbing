@@ -17,21 +17,9 @@ from openai import (
     RateLimitError as OpenAIRateLimit,
 )
 
-try:
-    from openai import APIConnectionError as OpenAIConn
-except ImportError:
-    OpenAIConn = None
-try:
-    import httpx as _httpx
-    _HTTPX_ERRS: tuple = (_httpx.ReadError, _httpx.ConnectError, _httpx.RemoteProtocolError)
-except ImportError:
-    _HTTPX_ERRS = ()
-
-_TRANSIENT_ERRORS: tuple = (
+_TRANSIENT_ERRORS = (
     TogetherTimeout, TogetherISE, TogetherRateLimit,
     OpenAITimeout, OpenAIISE, OpenAIRateLimit,
-    *((OpenAIConn,) if OpenAIConn else ()),
-    *_HTTPX_ERRS,
 )
 
 from . import config as _conf

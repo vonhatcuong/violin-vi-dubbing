@@ -35,12 +35,11 @@ transcription:
 # ── Translation tuning (smaller batches for Ollama Cloud) ───
 translation:
   batch_size: 16                          # 64 default is too large for single 671B/large-MoE request — 16 gives ~30s/batch on flash, ~60s on full
-  max_retries: 8                          # bump from 3 — Ollama Cloud occasionally resets connection mid-stream during long runs
 
 # ── Supertonic local tuning ─────────────────────────────────
 supertonic:
   total_steps: 8                          # 5 (low) … 12 (high) quality, default 8
-  speed: 1.4                              # pre-speed TTS so merger barely needs atempo (1.3 was still leaving distortion on long-segment runs)
+  speed: 1.3                              # pre-speed TTS so merger doesn't need heavy atempo (which distorts voice)
   inject_breath: true                     # heuristically insert <breath> tags for natural prosody on long segments
 
 # ── TTS workers — serialize when running local ──────────────
@@ -56,8 +55,8 @@ tts:
 # If TTS finishes early, the slot is silence-padded so the next segment
 # starts exactly when the source did.
 merge_video:
-  speed_clamp_min: 0.92                   # allow video to slow down to 92% if needed — smoother than hard cuts
-  speed_clamp_max: 1.0                    # never speed video above original
-  max_audio_speedup: 1.5                  # gentle atempo — TTS pre-sped via supertonic.speed=1.4 so this is enough headroom
-  max_freeze_s: 0.08                      # tiny freeze allowed (80ms) — invisible to viewer, hides residual mismatch
-  voiceover_volume: 0.05                  # original audio bed under dub — 5%
+  speed_clamp_min: 1.0                    # NEVER slow video below original
+  speed_clamp_max: 1.0                    # NEVER speed video above original — keep frames 1:1 with source
+  max_audio_speedup: 1.4                  # gentle atempo only — TTS is already pre-sped via supertonic.speed=1.3
+  max_freeze_s: 0.0                       # NO freeze frames
+  voiceover_volume: 0.02                  # original audio bed under dub — 2%
