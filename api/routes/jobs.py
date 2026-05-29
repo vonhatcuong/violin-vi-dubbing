@@ -9,14 +9,17 @@ from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from api.config import MAX_DURATION_SECONDS, MAX_FILE_SIZE_MB
-from api.models import JobResponse, JobStatus
-from api.storage import create_job, delete_job, get_job, input_path, output_video_path
+from api.models import JobHistoryItem, JobResponse, JobStatus
+from api.storage import create_job, delete_job, get_job, input_path, list_job_history, output_video_path
 from api.usage import has_free_trial, record_usage, remaining_trials
 from api.worker import submit_job, submit_url_job
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
-_ALLOWED_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"}
+_ALLOWED_EXTENSIONS = {
+    ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v",
+    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus",
+}
 
 
 def _probe_duration(path: Path) -> float | None:
@@ -49,6 +52,8 @@ async def create_translation_job(
     voice: str = Form("", description="Cartesia Sonic 3 voice (empty = auto native voice)"),
     source_language: str = Form("auto-detect", description="Source language hint for translation"),
     subtitles: bool = Form(True, description="Generate SRT subtitle file"),
+    subtitle_formats: str = Form("srt", description="Comma-separated subtitle formats: srt,vtt,txt"),
+    burn_subtitles: bool = Form(False, description="Also create a video copy with subtitles burned in"),
     style: str = Form("standard", description="Translation style profile (e.g. standard, kids, academic)"),
     voiceover: bool = Form(True, description="Voice-over mode: keep original audio underneath the dub"),
     together_api_key: str = Form("", description="User-provided Together API key (optional)"),
@@ -77,7 +82,9 @@ async def create_translation_job(
         "language": language,
         "voice": voice,
         "source_language": source_language,
-        "subtitles": subtitles,
+        "subtitles": subtitles or burn_subtitles,
+        "subtitle_formats": _parse_subtitle_formats(subtitle_formats, burn_subtitles),
+        "burn_subtitles": burn_subtitles,
         "style": style,
         "voiceover": voiceover,
     }
@@ -135,8 +142,11 @@ class UrlJobRequest(BaseModel):
     voice: str = ""
     source_language: str = "auto-detect"
     subtitles: bool = True
+    subtitle_formats: str = "srt"
+    burn_subtitles: bool = False
     style: str = "standard"
     voiceover: bool = True
+    prefer_source_captions: bool = True
     together_api_key: str = ""
     openai_api_key: str = ""
     elevenlabs_api_key: str = ""
@@ -165,9 +175,13 @@ async def create_job_from_url(request: Request, body: UrlJobRequest):
         "language": body.language,
         "voice": body.voice,
         "source_language": body.source_language,
-        "subtitles": body.subtitles,
+        "subtitles": body.subtitles or body.burn_subtitles,
+        "subtitle_formats": _parse_subtitle_formats(body.subtitle_formats, body.burn_subtitles),
+        "burn_subtitles": body.burn_subtitles,
         "style": body.style,
         "voiceover": body.voiceover,
+        "prefer_source_captions": body.prefer_source_captions,
+        "source_url": body.url.strip(),
     }
 
     create_job(job_id, params)
@@ -199,6 +213,12 @@ async def trial_status(request: Request):
     return {"remaining": remaining, "needs_key": remaining == 0}
 
 
+@router.get("/history", response_model=list[JobHistoryItem])
+def get_job_history(limit: int = 100):
+    """List recent local job history from SQLite."""
+    return list_job_history(limit=limit)
+
+
 @router.get("/{job_id}", response_model=JobResponse)
 def get_job_status(job_id: str):
     """Poll a job's current status and progress log."""
@@ -219,6 +239,24 @@ def cancel_translation_job(job_id: str):
         raise HTTPException(status_code=409, detail=f"Job is already {job.status.value}.")
     update_status(job_id, JobStatus.cancelled)
     return {"status": "cancelled"}
+
+
+def _parse_subtitle_formats(value: str, burn_subtitles: bool = False) -> tuple[str, ...]:
+    formats = tuple(
+        fmt.strip().lower()
+        for fmt in value.split(",")
+        if fmt.strip()
+    ) or ("srt",)
+    allowed = {"srt", "vtt", "txt"}
+    unknown = [fmt for fmt in formats if fmt not in allowed]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported subtitle format(s): {', '.join(unknown)}. Allowed: srt,vtt,txt.",
+        )
+    if burn_subtitles and "srt" not in formats:
+        formats = ("srt", *formats)
+    return tuple(dict.fromkeys(formats))
 
 
 @router.delete("/{job_id}", status_code=204)
