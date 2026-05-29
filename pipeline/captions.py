@@ -102,3 +102,31 @@ def _parse_manual(data: dict) -> list[Segment]:
         dur = (ev.get("dDurationMs") or 0) / 1000.0
         out.append(Segment(id=len(out), start=start, end=start + dur, text=text))
     return out
+
+
+def _parse_auto_words(data: dict) -> list[_Word]:
+    raw: list[tuple[str, float]] = []
+    for ev in data.get("events") or []:
+        segs = ev.get("segs")
+        if not segs:
+            continue
+        base = ev.get("tStartMs") or 0
+        for s in segs:
+            w = (s.get("utf8") or "").strip()
+            if not w:
+                continue
+            abs_start = (base + (s.get("tOffsetMs") or 0)) / 1000.0
+            raw.append((w, abs_start))
+    raw.sort(key=lambda x: x[1])
+
+    deduped: list[tuple[str, float]] = []
+    for text, t in raw:
+        if deduped and deduped[-1][0].casefold() == text.casefold() and abs(t - deduped[-1][1]) < 0.10:
+            continue
+        deduped.append((text, t))
+
+    words: list[_Word] = []
+    for i, (text, t) in enumerate(deduped):
+        end = deduped[i + 1][1] if i + 1 < len(deduped) else t + 0.30
+        words.append(_Word(text=text, start=t, end=max(end, t)))
+    return words

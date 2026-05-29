@@ -59,5 +59,28 @@ class ParseManualTests(unittest.TestCase):
         self.assertEqual([0, 1], [s.id for s in segs])
 
 
+class ParseAutoWordsTests(unittest.TestCase):
+    def test_word_level_with_offsets_and_dedup(self):
+        data = {"events": [
+            {"tStartMs": 1000, "dDurationMs": 2000, "segs": [
+                {"utf8": "a", "tOffsetMs": 0},
+                {"utf8": " few", "tOffsetMs": 200},
+            ]},
+            {"tStartMs": 1500, "segs": [{"utf8": "\n"}]},  # noise → dropped
+            {"tStartMs": 1180, "dDurationMs": 1500, "segs": [
+                {"utf8": "few", "tOffsetMs": 20},   # rolling dup of "few"@1.2 → dropped
+                {"utf8": " years", "tOffsetMs": 300},
+            ]},
+        ]}
+        words = captions._parse_auto_words(data)
+        self.assertEqual(["a", "few", "years"], [w.text for w in words])
+        self.assertAlmostEqual(1.0, words[0].start, places=3)
+        self.assertAlmostEqual(1.2, words[1].start, places=3)
+        # end of a word == start of next
+        self.assertAlmostEqual(words[1].start, words[0].end, places=3)
+        # last word gets +0.30s tail
+        self.assertAlmostEqual(words[2].start + 0.30, words[2].end, places=3)
+
+
 if __name__ == "__main__":
     unittest.main()
