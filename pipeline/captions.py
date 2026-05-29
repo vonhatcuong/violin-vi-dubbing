@@ -180,3 +180,46 @@ def _align_chunk(words: list[_Word], punctuated: str) -> list[Segment] | None:
             segs.append(Segment(id=len(segs), start=cur_words[0].start,
                                 end=cur_words[-1].end, text=text))
     return segs
+
+
+def _together_extra() -> dict:
+    if get_translation_provider(_conf.get()) == "together":
+        return {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    return {}
+
+
+def _restore_punctuation(text: str, client, source_language: str,
+                         tracker: CostTracker | None = None) -> str:
+    cfg = _conf.get()
+    model = get_translation_model(cfg)
+    max_retries = cfg["translation"].get("max_retries", 3)
+    system_msg = _prompts.load("restore_punctuation", "system", source_language=source_language)
+    user_msg = _prompts.load("restore_punctuation", "user",
+                             source_language=source_language, text=text)
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.0,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "restore_punctuation",
+                                    "strict": True, "schema": _PUNCT_SCHEMA},
+                },
+                **_together_extra(),
+            )
+            if tracker and getattr(response, "usage", None):
+                tracker.add_llm_usage(response.usage.prompt_tokens or 0,
+                                      response.usage.completion_tokens or 0)
+            raw = response.choices[0].message.content.strip()
+            return json.loads(raw)["text"]
+        except Exception:  # transient API / parse error
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+            else:
+                raise
+    raise RuntimeError("punctuation restore exhausted retries")

@@ -1,10 +1,20 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
 from pipeline import captions
 
 
 def _track(url, ext="json3"):
     return [{"ext": ext, "url": url}]
+
+
+def _fake_client(content):
+    client = MagicMock()
+    resp = MagicMock()
+    resp.choices = [MagicMock(message=MagicMock(content=content))]
+    resp.usage = MagicMock(prompt_tokens=5, completion_tokens=7)
+    client.chat.completions.create.return_value = resp
+    return client
 
 
 class SelectTrackTests(unittest.TestCase):
@@ -109,6 +119,16 @@ class AlignTests(unittest.TestCase):
         # LLM returned far more tokens than words → signal fallback
         segs = captions._align_chunk(words, "a b c d e f g h.")
         self.assertIsNone(segs)
+
+
+class RestorePunctuationTests(unittest.TestCase):
+    def test_returns_punctuated_text_and_tracks_usage(self):
+        from pipeline.costs import CostTracker
+        client = _fake_client('{"text": "A few years."}')
+        tracker = CostTracker()
+        out = captions._restore_punctuation("a few years", client, "English", tracker)
+        self.assertEqual("A few years.", out)
+        client.chat.completions.create.assert_called_once()
 
 
 if __name__ == "__main__":
