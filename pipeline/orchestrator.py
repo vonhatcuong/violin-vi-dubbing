@@ -8,10 +8,12 @@ same five-step flow.
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import tempfile
 import threading
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -105,6 +107,7 @@ def dub_video(
 
         lang_code = language_code(opts.target_language)
         segments = merge_continuous_segments(segments)
+        _persist_segments(segments, output_video_path, "transcribed")
 
         _check_cancel(is_cancelled)
         _emit(on_progress, 3, f"Translating {len(segments)} segments to {opts.target_language} (style: {style.name})…")
@@ -115,6 +118,7 @@ def dub_video(
             style_temperature=style.temperature,
         )
         tracker.record_step("Translation (LLM)")
+        _persist_segments(translated, output_video_path, "translated")
         # Aggressive re-merge → re-split: gives the translator full paragraph
         # context (better quality) while still producing sentence-level units
         # for TTS and subtitles (1-to-1 alignment, readable line lengths).
@@ -187,6 +191,24 @@ def dub_video(
         cost_tracker=tracker,
         steps=list(tracker._steps),
     )
+
+
+def _persist_segments(segments: list[Segment], output_video_path: str, stage: str) -> None:
+    """Dump segments to JSON next to the output video for crash recovery.
+
+    Writes ``<output>.{stage}.segments.json`` (atomic via temp-rename). Failures
+    are non-fatal — persistence is a recovery convenience, not a hard
+    requirement of the pipeline.
+    """
+    try:
+        out = Path(output_video_path).with_suffix(f".{stage}.segments.json")
+        payload = {"stage": stage, "count": len(segments), "segments": [asdict(s) for s in segments]}
+        tmp = out.with_suffix(out.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, out)
+        print(f"      [persist] {stage} → {out} ({len(segments)} segments)")
+    except Exception as exc:
+        print(f"      [persist] WARN: failed to dump {stage} segments: {exc}")
 
 
 def _check_cancel(cb: CancelCallback | None) -> None:
