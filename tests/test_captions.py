@@ -163,5 +163,33 @@ class RestoreAndAlignTests(unittest.TestCase):
         self.assertEqual("a b", segs[0].text)
 
 
+class FetchSourceCaptionsTests(unittest.TestCase):
+    def _ydl_with(self, info):
+        fake = MagicMock()
+        fake.__enter__.return_value.extract_info.return_value = info
+        return fake
+
+    def test_manual_path_returns_segments(self):
+        info = {"language": "en",
+                "subtitles": {"en": [{"ext": "json3", "url": "MAN_URL"}]},
+                "automatic_captions": {}}
+        manual_json = {"events": [
+            {"tStartMs": 0, "dDurationMs": 1000, "segs": [{"utf8": "Hello there."}]},
+        ]}
+        with patch("pipeline.captions._open_ydl", return_value=self._ydl_with(info)), \
+             patch("pipeline.captions._download_json3", return_value=manual_json):
+            segs = captions.fetch_source_captions("https://x/y", "English")
+        self.assertEqual(["Hello there."], [s.text for s in segs])
+
+    def test_returns_none_when_no_track(self):
+        info = {"language": "en", "subtitles": {}, "automatic_captions": {}}
+        with patch("pipeline.captions._open_ydl", return_value=self._ydl_with(info)):
+            self.assertIsNone(captions.fetch_source_captions("https://x/y", "English"))
+
+    def test_returns_none_on_extract_error(self):
+        with patch("pipeline.captions._open_ydl", side_effect=RuntimeError("net")):
+            self.assertIsNone(captions.fetch_source_captions("https://x/y", "English"))
+
+
 if __name__ == "__main__":
     unittest.main()

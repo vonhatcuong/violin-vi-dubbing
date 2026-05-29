@@ -243,3 +243,58 @@ def _restore_punctuation_and_align(words: list[_Word], client, source_language: 
     for i, s in enumerate(all_segs):
         s.id = i
     return all_segs
+
+
+def _open_ydl():
+    import yt_dlp
+
+    opts = {"skip_download": True, "quiet": True, "no_warnings": True,
+            "writesubtitles": True, "writeautomaticsub": True, "noplaylist": True}
+    return yt_dlp.YoutubeDL(opts)
+
+
+def _download_json3(url: str, *, timeout: float = 30.0) -> dict:
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def fetch_source_captions(url: str, source_language: str = "auto-detect", *,
+                          llm_client=None,
+                          tracker: CostTracker | None = None) -> list[Segment] | None:
+    """Return Segment[] from the URL's source-language captions, or None.
+
+    None means no usable caption was found — the caller should run Whisper.
+    """
+    try:
+        with _open_ydl() as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as exc:
+        print(f"      [captions] extract_info failed: {exc}")
+        return None
+
+    src = _source_lang_code(info, source_language)
+    track = _select_track(info, src)
+    if track is None:
+        print("      [captions] no suitable source-language caption track")
+        return None
+
+    try:
+        data = _download_json3(track.url)
+    except Exception as exc:
+        print(f"      [captions] json3 download failed: {exc}")
+        return None
+
+    if track.kind == "manual":
+        segs = _parse_manual(data)
+    else:
+        words = _parse_auto_words(data)
+        if not words:
+            return None
+        if llm_client is None:
+            llm_client = make_translation_client(_conf.get())
+        segs = _restore_punctuation_and_align(words, llm_client, source_language, tracker)
+
+    if not segs:
+        return None
+    print(f"      [captions] using {track.kind} captions [{track.lang}] — {len(segs)} segments")
+    return segs
