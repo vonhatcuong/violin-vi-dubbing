@@ -131,5 +131,37 @@ class RestorePunctuationTests(unittest.TestCase):
         client.chat.completions.create.assert_called_once()
 
 
+class RestoreAndAlignTests(unittest.TestCase):
+    def _w(self, items):
+        return [captions._Word(t, s, e) for t, s, e in items]
+
+    def test_happy_path_aligns_to_word_timestamps(self):
+        words = self._w([("a", 0.0, 1.0), ("few", 1.0, 2.0), ("years", 2.0, 3.0)])
+        client = _fake_client('{"text": "A few years."}')
+        segs = captions._restore_punctuation_and_align(words, client, "English", None)
+        self.assertEqual(["A few years."], [s.text for s in segs])
+        self.assertAlmostEqual(0.0, segs[0].start, places=3)
+        self.assertAlmostEqual(3.0, segs[0].end, places=3)
+
+    def test_fallback_one_segment_when_llm_alters_tokens(self):
+        words = self._w([("a", 0.0, 1.0), ("b", 1.0, 2.0)])
+        # token count far off → _align_chunk returns None → fallback to one seg
+        client = _fake_client('{"text": "a b c d e f g h i."}')
+        segs = captions._restore_punctuation_and_align(words, client, "English", None)
+        self.assertEqual(1, len(segs))
+        self.assertEqual("a b c d e f g h i.", segs[0].text)
+        self.assertAlmostEqual(0.0, segs[0].start, places=3)
+        self.assertAlmostEqual(2.0, segs[0].end, places=3)
+
+    def test_fallback_uses_raw_when_llm_raises(self):
+        words = self._w([("a", 0.0, 1.0), ("b", 1.0, 2.0)])
+        client = MagicMock()
+        client.chat.completions.create.side_effect = RuntimeError("boom")
+        with patch("pipeline.captions.time.sleep"):  # skip retry backoff
+            segs = captions._restore_punctuation_and_align(words, client, "English", None)
+        self.assertEqual(1, len(segs))
+        self.assertEqual("a b", segs[0].text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -223,3 +223,23 @@ def _restore_punctuation(text: str, client, source_language: str,
             else:
                 raise
     raise RuntimeError("punctuation restore exhausted retries")
+
+
+def _restore_punctuation_and_align(words: list[_Word], client, source_language: str,
+                                   tracker: CostTracker | None = None) -> list[Segment]:
+    all_segs: list[Segment] = []
+    for chunk in _chunk_words(words):
+        raw_text = " ".join(w.text for w in chunk)
+        try:
+            punct = _restore_punctuation(raw_text, client, source_language, tracker)
+        except Exception as exc:
+            print(f"      [captions] punctuation restore failed: {exc}")
+            punct = None
+        segs = _align_chunk(chunk, punct) if punct else None
+        if not segs:  # None (mismatch) or empty → fallback: one segment per chunk
+            text = (punct or raw_text).strip()
+            segs = [Segment(id=0, start=chunk[0].start, end=chunk[-1].end, text=text)]
+        all_segs.extend(segs)
+    for i, s in enumerate(all_segs):
+        s.id = i
+    return all_segs
