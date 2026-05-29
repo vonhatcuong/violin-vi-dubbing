@@ -46,3 +46,44 @@ class _TrackRef:
     kind: str   # "manual" | "auto"
     lang: str
     url: str
+
+
+def _source_lang_code(info: dict, source_language: str) -> str | None:
+    if source_language and source_language.lower() != "auto-detect":
+        return language_code(source_language)
+    lang = info.get("language")
+    return lang.split("-")[0] if lang else None
+
+
+def _json3_url(track_list) -> str | None:
+    for e in track_list or []:
+        if e.get("ext") == "json3":
+            return e.get("url")
+    return None
+
+
+def _select_track(info: dict, src: str | None) -> _TrackRef | None:
+    subs = info.get("subtitles") or {}
+    auto = info.get("automatic_captions") or {}
+
+    if src and src in subs:
+        u = _json3_url(subs[src])
+        if u:
+            return _TrackRef("manual", src, u)
+    if src:
+        for k in sorted(subs):
+            if k.split("-")[0] == src:
+                u = _json3_url(subs[k])
+                if u:
+                    return _TrackRef("manual", k, u)
+    # auto: ONLY exact source code (ASR original) — avoids translated tracks
+    if src and src in auto:
+        u = _json3_url(auto[src])
+        if u:
+            return _TrackRef("auto", src, u)
+    if not src and subs:
+        k = sorted(subs)[0]
+        u = _json3_url(subs[k])
+        if u:
+            return _TrackRef("manual", k, u)
+    return None
