@@ -9,6 +9,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from pipeline import config as pipeline_config
+from pipeline.captions import fetch_source_captions
+from pipeline.downloader import download_url_to_file
 from pipeline.llm_client import get_transcription_provider, get_translation_provider
 from pipeline.orchestrator import Cancelled, DubOptions, dub_video
 from pipeline.styles import resolve as resolve_style
@@ -20,11 +22,13 @@ from .models import JobStatus
 from .storage import (
     _read_meta,
     append_progress,
+    burned_video_path,
     input_path,
     original_audio_path,
     output_srt_path,
     output_video_path,
     save_segments,
+    transcript_path,
     update_status,
 )
 
@@ -49,6 +53,7 @@ def _run_job(
     together_key_override: str | None = None,
     openai_key_override: str | None = None,
     elevenlabs_key_override: str | None = None,
+    segments_override=None,
 ) -> None:
     update_status(job_id, JobStatus.running)
 
@@ -56,6 +61,8 @@ def _run_job(
     voice = params["voice"]
     source_language = params["source_language"]
     subtitles = params["subtitles"]
+    subtitle_formats = tuple(params.get("subtitle_formats") or ("srt",))
+    burn_subs = bool(params.get("burn_subtitles", False))
     voiceover = params.get("voiceover", True)
     style = resolve_style(params.get("style", "standard"))
 
@@ -79,6 +86,8 @@ def _run_job(
         voiceover=voiceover,
         bake_voiceover=False,           # web mode: browser overlays original at user-chosen volume
         subtitles=subtitles,
+        subtitle_formats=subtitle_formats,
+        burn_subtitles=burn_subs,
         together_api_key=together_key_override,
         openai_api_key=openai_key_override,
         elevenlabs_api_key=elevenlabs_key_override,
@@ -90,9 +99,12 @@ def _run_job(
             str(out_video),
             opts,
             output_srt_path=str(out_srt) if out_srt else None,
+            transcript_path=str(transcript_path(job_id)),
+            burned_video_path=str(burned_video_path(job_id)) if burn_subs else None,
             original_audio_path=orig_audio,
             on_progress=lambda step, msg: append_progress(job_id, step, TOTAL_STEPS, msg),
             is_cancelled=lambda: _is_cancelled(job_id),
+            segments_override=segments_override,
         )
         tracker = result.cost_tracker
         total_duration = (tracker.audio_minutes or 0.0) * 60.0
@@ -160,35 +172,15 @@ def _run_job(
 
 def _download_url(job_id: str, url: str) -> Path:
     """Download a video from a URL using yt-dlp. Returns the path to the downloaded file."""
-    import yt_dlp
-
     from .config import MAX_DURATION_SECONDS, MAX_FILE_SIZE_MB
     from .storage import _job_dir
 
-    job_dir = _job_dir(job_id)
-    output_template = str(job_dir / "input.%(ext)s")
-
-    ydl_opts = {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "outtmpl": output_template,
-        "merge_output_format": "mp4",
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-    }
-    if MAX_FILE_SIZE_MB > 0:
-        ydl_opts["max_filesize"] = MAX_FILE_SIZE_MB * 1024 * 1024
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        duration = info.get("duration", 0)
-        if MAX_DURATION_SECONDS > 0 and duration and duration > MAX_DURATION_SECONDS:
-            limit_min = MAX_DURATION_SECONDS // 60
-            raise ValueError(f"Video too long ({duration // 60} min). Max {limit_min} min.")
-
-    for p in job_dir.glob("input.*"):
-        return p
-    raise FileNotFoundError("yt-dlp download succeeded but no input file found.")
+    return download_url_to_file(
+        url,
+        _job_dir(job_id),
+        max_duration_seconds=MAX_DURATION_SECONDS,
+        max_file_size_mb=MAX_FILE_SIZE_MB,
+    )
 
 
 def _run_url_job(
@@ -209,7 +201,13 @@ def _run_url_job(
         update_status(job_id, JobStatus.failed, f"Download failed: {exc}")
         return
 
-    _run_job(job_id, params, together_key_override, openai_key_override, elevenlabs_key_override)
+    segments_override = None
+    if params.get("prefer_source_captions", True):
+        append_progress(job_id, 1, TOTAL_STEPS, "Checking for source captions…")
+        segments_override = fetch_source_captions(url, params.get("source_language", "auto-detect"))
+
+    _run_job(job_id, params, together_key_override, openai_key_override,
+             elevenlabs_key_override, segments_override=segments_override)
 
 
 def submit_job(
