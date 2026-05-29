@@ -13,6 +13,7 @@ import json
 import re
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from . import config as _conf
@@ -25,13 +26,7 @@ import prompts as _prompts
 
 _SENT_END = re.compile(r"[.!?…。！？]+$")
 _PUNCT_STRIP = re.compile(r"^[\W_]+|[\W_]+$")  # strip leading/trailing non-word (unicode-aware)
-
-_PUNCT_SCHEMA = {
-    "type": "object",
-    "properties": {"text": {"type": "string"}},
-    "required": ["text"],
-    "additionalProperties": False,
-}
+_RESTORE_WORKERS = 6  # parallel LLM calls for punctuation restore (one per chunk)
 
 
 @dataclass
@@ -197,6 +192,13 @@ def _restore_punctuation(text: str, client, source_language: str,
     system_msg = _prompts.load("restore_punctuation", "system", source_language=source_language)
     user_msg = _prompts.load("restore_punctuation", "user",
                              source_language=source_language, text=text)
+    # qwen3 (Ollama) is a reasoning model; restoring punctuation needs no
+    # chain-of-thought. The /no_think soft switch disables it — without this a
+    # single call can take minutes. Together uses extra_body instead (below).
+    if get_translation_provider(cfg) == "ollama":
+        system_msg = "/no_think\n" + system_msg
+    # NOTE: no `response_format=json_schema` here. Ollama (qwen3-next:80b) hangs
+    # on strict structured output; a plain-text response returns in ~20s instead.
     for attempt in range(1, max_retries + 1):
         try:
             response = client.chat.completions.create(
@@ -206,19 +208,13 @@ def _restore_punctuation(text: str, client, source_language: str,
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=0.0,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {"name": "restore_punctuation",
-                                    "strict": True, "schema": _PUNCT_SCHEMA},
-                },
                 **_together_extra(),
             )
             if tracker and getattr(response, "usage", None):
                 tracker.add_llm_usage(response.usage.prompt_tokens or 0,
                                       response.usage.completion_tokens or 0)
-            raw = response.choices[0].message.content.strip()
-            return json.loads(raw)["text"]
-        except Exception:  # transient API / parse error
+            return (response.choices[0].message.content or "").strip()
+        except Exception:  # transient API error
             if attempt < max_retries:
                 time.sleep(2 ** attempt)
             else:
@@ -226,21 +222,40 @@ def _restore_punctuation(text: str, client, source_language: str,
     raise RuntimeError("punctuation restore exhausted retries")
 
 
+def _restore_one_chunk(chunk: list[_Word], client, source_language: str,
+                       tracker: CostTracker | None) -> list[Segment]:
+    raw_text = " ".join(w.text for w in chunk)
+    try:
+        punct = _restore_punctuation(raw_text, client, source_language, tracker)
+    except Exception as exc:
+        print(f"      [captions] punctuation restore failed: {exc}")
+        punct = None
+    segs = _align_chunk(chunk, punct) if punct else None
+    if not segs:  # None (mismatch) or empty → fallback: one segment per chunk
+        text = (punct or raw_text).strip()
+        segs = [Segment(id=0, start=chunk[0].start, end=chunk[-1].end, text=text)]
+    return segs
+
+
 def _restore_punctuation_and_align(words: list[_Word], client, source_language: str,
-                                   tracker: CostTracker | None = None) -> list[Segment]:
+                                   tracker: CostTracker | None = None,
+                                   workers: int = _RESTORE_WORKERS) -> list[Segment]:
+    chunks = _chunk_words(words)
+    if not chunks:
+        return []
+
+    # Chunks are independent LLM calls — run them in parallel but reassemble in
+    # timeline order so segment timestamps stay monotonic.
+    results: dict[int, list[Segment]] = {}
+    with ThreadPoolExecutor(max_workers=min(workers, len(chunks))) as pool:
+        futs = {pool.submit(_restore_one_chunk, c, client, source_language, tracker): i
+                for i, c in enumerate(chunks)}
+        for f in as_completed(futs):
+            results[futs[f]] = f.result()
+
     all_segs: list[Segment] = []
-    for chunk in _chunk_words(words):
-        raw_text = " ".join(w.text for w in chunk)
-        try:
-            punct = _restore_punctuation(raw_text, client, source_language, tracker)
-        except Exception as exc:
-            print(f"      [captions] punctuation restore failed: {exc}")
-            punct = None
-        segs = _align_chunk(chunk, punct) if punct else None
-        if not segs:  # None (mismatch) or empty → fallback: one segment per chunk
-            text = (punct or raw_text).strip()
-            segs = [Segment(id=0, start=chunk[0].start, end=chunk[-1].end, text=text)]
-        all_segs.extend(segs)
+    for i in range(len(chunks)):
+        all_segs.extend(results[i])
     for i, s in enumerate(all_segs):
         s.id = i
     return all_segs

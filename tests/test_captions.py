@@ -124,7 +124,7 @@ class AlignTests(unittest.TestCase):
 class RestorePunctuationTests(unittest.TestCase):
     def test_returns_punctuated_text_and_tracks_usage(self):
         from pipeline.costs import CostTracker
-        client = _fake_client('{"text": "A few years."}')
+        client = _fake_client("A few years.")
         tracker = CostTracker()
         out = captions._restore_punctuation("a few years", client, "English", tracker)
         self.assertEqual("A few years.", out)
@@ -137,7 +137,7 @@ class RestoreAndAlignTests(unittest.TestCase):
 
     def test_happy_path_aligns_to_word_timestamps(self):
         words = self._w([("a", 0.0, 1.0), ("few", 1.0, 2.0), ("years", 2.0, 3.0)])
-        client = _fake_client('{"text": "A few years."}')
+        client = _fake_client("A few years.")
         segs = captions._restore_punctuation_and_align(words, client, "English", None)
         self.assertEqual(["A few years."], [s.text for s in segs])
         self.assertAlmostEqual(0.0, segs[0].start, places=3)
@@ -146,7 +146,7 @@ class RestoreAndAlignTests(unittest.TestCase):
     def test_fallback_one_segment_when_llm_alters_tokens(self):
         words = self._w([("a", 0.0, 1.0), ("b", 1.0, 2.0)])
         # token count far off → _align_chunk returns None → fallback to one seg
-        client = _fake_client('{"text": "a b c d e f g h i."}')
+        client = _fake_client("a b c d e f g h i.")
         segs = captions._restore_punctuation_and_align(words, client, "English", None)
         self.assertEqual(1, len(segs))
         self.assertEqual("a b c d e f g h i.", segs[0].text)

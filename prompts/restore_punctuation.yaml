@@ -4,7 +4,7 @@ system: |
   - Add sentence-ending punctuation (. ! ?), commas, and correct capitalization.
   - DO NOT add, remove, reorder, translate, or change any word. Keep every word
     exactly as given, in the same order. Only insert punctuation and fix casing.
-  Respond with JSON only: {{"text": "<punctuated transcript>"}}.
+  - Return ONLY the corrected transcript text — no quotes, no JSON, no commentary.
 
 user: |
   Source language: {source_language}
