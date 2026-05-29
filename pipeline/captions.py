@@ -130,3 +130,53 @@ def _parse_auto_words(data: dict) -> list[_Word]:
         end = deduped[i + 1][1] if i + 1 < len(deduped) else t + 0.30
         words.append(_Word(text=text, start=t, end=max(end, t)))
     return words
+
+
+def _norm(tok: str) -> str:
+    return _PUNCT_STRIP.sub("", tok).casefold()
+
+
+def _chunk_words(words: list[_Word], max_words: int = 120, max_gap: float = 2.0) -> list[list[_Word]]:
+    chunks: list[list[_Word]] = []
+    cur: list[_Word] = []
+    for i, w in enumerate(words):
+        cur.append(w)
+        gap_break = i + 1 < len(words) and (words[i + 1].start - w.end) > max_gap
+        if len(cur) >= max_words or gap_break:
+            chunks.append(cur)
+            cur = []
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _align_chunk(words: list[_Word], punctuated: str) -> list[Segment] | None:
+    if not words:
+        return []
+    tokens = punctuated.split()
+    if not tokens:
+        return None
+    if abs(len(tokens) - len(words)) / max(1, len(words)) > 0.15:
+        return None  # LLM altered the word stream → caller falls back
+
+    segs: list[Segment] = []
+    cur_words: list[_Word] = []
+    cur_text: list[str] = []
+    wi = 0
+    for tok in tokens:
+        if wi < len(words):
+            cur_words.append(words[wi])
+            wi += 1
+        cur_text.append(tok)
+        if _SENT_END.search(tok) and _is_sentence_end(tok):
+            text = " ".join(cur_text).strip()
+            if cur_words and text:
+                segs.append(Segment(id=len(segs), start=cur_words[0].start,
+                                    end=cur_words[-1].end, text=text))
+            cur_words, cur_text = [], []
+    if cur_words and cur_text:
+        text = " ".join(cur_text).strip()
+        if text:
+            segs.append(Segment(id=len(segs), start=cur_words[0].start,
+                                end=cur_words[-1].end, text=text))
+    return segs

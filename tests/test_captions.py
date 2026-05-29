@@ -82,5 +82,34 @@ class ParseAutoWordsTests(unittest.TestCase):
         self.assertAlmostEqual(words[2].start + 0.30, words[2].end, places=3)
 
 
+class AlignTests(unittest.TestCase):
+    def _w(self, items):
+        return [captions._Word(t, s, e) for t, s, e in items]
+
+    def test_chunk_breaks_on_gap(self):
+        words = self._w([("a", 0.0, 0.5), ("b", 0.5, 1.0), ("c", 4.0, 4.5)])
+        chunks = captions._chunk_words(words, max_words=100, max_gap=2.0)
+        self.assertEqual([["a", "b"], ["c"]], [[w.text for w in c] for c in chunks])
+
+    def test_align_splits_sentences_on_terminal_punct(self):
+        words = self._w([("a", 0.0, 1.0), ("few", 1.0, 2.0), ("years", 2.0, 3.0),
+                         ("hello", 3.0, 4.0), ("there", 4.0, 5.0)])
+        punctuated = "A few years. Hello there?"
+        segs = captions._align_chunk(words, punctuated)
+        self.assertEqual(2, len(segs))
+        self.assertEqual("A few years.", segs[0].text)
+        self.assertAlmostEqual(0.0, segs[0].start, places=3)
+        self.assertAlmostEqual(3.0, segs[0].end, places=3)
+        self.assertEqual("Hello there?", segs[1].text)
+        self.assertAlmostEqual(3.0, segs[1].start, places=3)
+        self.assertAlmostEqual(5.0, segs[1].end, places=3)
+
+    def test_align_returns_none_on_large_token_mismatch(self):
+        words = self._w([("a", 0.0, 1.0), ("b", 1.0, 2.0)])
+        # LLM returned far more tokens than words → signal fallback
+        segs = captions._align_chunk(words, "a b c d e f g h.")
+        self.assertIsNone(segs)
+
+
 if __name__ == "__main__":
     unittest.main()
