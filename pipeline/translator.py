@@ -116,6 +116,11 @@ def _translate_single(
         system_msg = _prompts.load("translate", "single_system", **fmt)
         user_msg = _prompts.load("translate", "single_user", **fmt)
 
+    # qwen3 (Ollama) reasons by default, making each call minutes-slow; the
+    # /no_think soft switch disables it. Together uses extra_body instead (below).
+    if get_translation_provider(cfg) == "ollama":
+        system_msg = "/no_think\n" + system_msg
+
     for attempt in range(1, max_retries + 1):
         try:
             response = client.chat.completions.create(
@@ -182,6 +187,8 @@ def _try_batch(
         prompt = _prompts.load("translate", "batch_user", **fmt)
 
     cfg = _conf.get()
+    if get_translation_provider(cfg) == "ollama":
+        system_msg = "/no_think\n" + system_msg
     model = get_translation_model(cfg)
     max_retries = cfg["translation"]["max_retries"]
     temp = style_temperature if style_temperature is not None else cfg["translation"]["temperature"]
