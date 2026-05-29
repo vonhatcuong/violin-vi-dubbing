@@ -8,15 +8,6 @@ def _track(url, ext="json3"):
     return [{"ext": ext, "url": url}]
 
 
-def _fake_client(content):
-    client = MagicMock()
-    resp = MagicMock()
-    resp.choices = [MagicMock(message=MagicMock(content=content))]
-    resp.usage = MagicMock(prompt_tokens=5, completion_tokens=7)
-    client.chat.completions.create.return_value = resp
-    return client
-
-
 class SelectTrackTests(unittest.TestCase):
     def test_source_lang_from_explicit_language(self):
         self.assertEqual("en", captions._source_lang_code({}, "English"))
@@ -38,7 +29,6 @@ class SelectTrackTests(unittest.TestCase):
         self.assertEqual(("auto", "en", "AUTO"), (t.kind, t.lang, t.url))
 
     def test_rejects_translated_auto_track(self):
-        # only translated tracks exist (target=vi / odd key), source=en → no ASR original
         info = {"automatic_captions": {"vi": _track("TRANS"), "aa-en": _track("X")}}
         self.assertIsNone(captions._select_track(info, "en"))
 
@@ -86,81 +76,35 @@ class ParseAutoWordsTests(unittest.TestCase):
         self.assertEqual(["a", "few", "years"], [w.text for w in words])
         self.assertAlmostEqual(1.0, words[0].start, places=3)
         self.assertAlmostEqual(1.2, words[1].start, places=3)
-        # end of a word == start of next
         self.assertAlmostEqual(words[1].start, words[0].end, places=3)
-        # last word gets +0.30s tail
         self.assertAlmostEqual(words[2].start + 0.30, words[2].end, places=3)
 
 
-class AlignTests(unittest.TestCase):
+class SegmentAutoWordsTests(unittest.TestCase):
     def _w(self, items):
         return [captions._Word(t, s, e) for t, s, e in items]
 
-    def test_chunk_breaks_on_gap(self):
-        words = self._w([("a", 0.0, 0.5), ("b", 0.5, 1.0), ("c", 4.0, 4.5)])
-        chunks = captions._chunk_words(words, max_words=100, max_gap=2.0)
-        self.assertEqual([["a", "b"], ["c"]], [[w.text for w in c] for c in chunks])
-
-    def test_align_splits_sentences_on_terminal_punct(self):
-        words = self._w([("a", 0.0, 1.0), ("few", 1.0, 2.0), ("years", 2.0, 3.0),
-                         ("hello", 3.0, 4.0), ("there", 4.0, 5.0)])
-        punctuated = "A few years. Hello there?"
-        segs = captions._align_chunk(words, punctuated)
-        self.assertEqual(2, len(segs))
-        self.assertEqual("A few years.", segs[0].text)
+    def test_breaks_on_pause_capitalizes_and_periods(self):
+        words = self._w([("hello", 0.0, 0.4), ("world", 0.4, 0.8),   # gap 0.7 > 0.5 → break
+                         ("how", 1.5, 1.8), ("are", 1.8, 2.0), ("you", 2.0, 2.3)])
+        segs = captions._segment_auto_words(words, max_pause=0.5, max_words=20)
+        self.assertEqual(["Hello world.", "How are you."], [s.text for s in segs])
         self.assertAlmostEqual(0.0, segs[0].start, places=3)
-        self.assertAlmostEqual(3.0, segs[0].end, places=3)
-        self.assertEqual("Hello there?", segs[1].text)
-        self.assertAlmostEqual(3.0, segs[1].start, places=3)
-        self.assertAlmostEqual(5.0, segs[1].end, places=3)
+        self.assertAlmostEqual(0.8, segs[0].end, places=3)
+        self.assertAlmostEqual(1.5, segs[1].start, places=3)
+        self.assertAlmostEqual(2.3, segs[1].end, places=3)
 
-    def test_align_returns_none_on_large_token_mismatch(self):
-        words = self._w([("a", 0.0, 1.0), ("b", 1.0, 2.0)])
-        # LLM returned far more tokens than words → signal fallback
-        segs = captions._align_chunk(words, "a b c d e f g h.")
-        self.assertIsNone(segs)
+    def test_caps_by_max_words(self):
+        # gaps are all 0.5s (no pause break with max_pause=2.0); cap at 2 words
+        words = self._w([(f"w{i}", i * 1.0, i * 1.0 + 0.5) for i in range(5)])
+        segs = captions._segment_auto_words(words, max_pause=2.0, max_words=2)
+        self.assertEqual([2, 2, 1], [len(s.text.split()) for s in segs])
+        self.assertTrue(all(s.text.endswith(".") for s in segs))
 
-
-class RestorePunctuationTests(unittest.TestCase):
-    def test_returns_punctuated_text_and_tracks_usage(self):
-        from pipeline.costs import CostTracker
-        client = _fake_client("A few years.")
-        tracker = CostTracker()
-        out = captions._restore_punctuation("a few years", client, "English", tracker)
-        self.assertEqual("A few years.", out)
-        client.chat.completions.create.assert_called_once()
-
-
-class RestoreAndAlignTests(unittest.TestCase):
-    def _w(self, items):
-        return [captions._Word(t, s, e) for t, s, e in items]
-
-    def test_happy_path_aligns_to_word_timestamps(self):
-        words = self._w([("a", 0.0, 1.0), ("few", 1.0, 2.0), ("years", 2.0, 3.0)])
-        client = _fake_client("A few years.")
-        segs = captions._restore_punctuation_and_align(words, client, "English", None)
-        self.assertEqual(["A few years."], [s.text for s in segs])
-        self.assertAlmostEqual(0.0, segs[0].start, places=3)
-        self.assertAlmostEqual(3.0, segs[0].end, places=3)
-
-    def test_fallback_one_segment_when_llm_alters_tokens(self):
-        words = self._w([("a", 0.0, 1.0), ("b", 1.0, 2.0)])
-        # token count far off → _align_chunk returns None → fallback to one seg
-        client = _fake_client("a b c d e f g h i.")
-        segs = captions._restore_punctuation_and_align(words, client, "English", None)
-        self.assertEqual(1, len(segs))
-        self.assertEqual("a b c d e f g h i.", segs[0].text)
-        self.assertAlmostEqual(0.0, segs[0].start, places=3)
-        self.assertAlmostEqual(2.0, segs[0].end, places=3)
-
-    def test_fallback_uses_raw_when_llm_raises(self):
-        words = self._w([("a", 0.0, 1.0), ("b", 1.0, 2.0)])
-        client = MagicMock()
-        client.chat.completions.create.side_effect = RuntimeError("boom")
-        with patch("pipeline.captions.time.sleep"):  # skip retry backoff
-            segs = captions._restore_punctuation_and_align(words, client, "English", None)
-        self.assertEqual(1, len(segs))
-        self.assertEqual("a b", segs[0].text)
+    def test_keeps_existing_terminal_punctuation(self):
+        words = self._w([("ok", 0.0, 0.5), ("done!", 0.5, 1.0)])
+        segs = captions._segment_auto_words(words, max_pause=2.0, max_words=20)
+        self.assertEqual(["Ok done!"], [s.text for s in segs])
 
 
 class FetchSourceCaptionsTests(unittest.TestCase):
@@ -180,6 +124,19 @@ class FetchSourceCaptionsTests(unittest.TestCase):
              patch("pipeline.captions._download_json3", return_value=manual_json):
             segs = captions.fetch_source_captions("https://x/y", "English")
         self.assertEqual(["Hello there."], [s.text for s in segs])
+
+    def test_auto_path_segments_without_llm(self):
+        info = {"language": "en", "subtitles": {},
+                "automatic_captions": {"en": [{"ext": "json3", "url": "AUTO_URL"}]}}
+        auto_json = {"events": [
+            {"tStartMs": 0, "segs": [{"utf8": "hello", "tOffsetMs": 0},
+                                     {"utf8": " world", "tOffsetMs": 400}]},
+            {"tStartMs": 2000, "segs": [{"utf8": "bye", "tOffsetMs": 0}]},  # 1.2s gap → new seg
+        ]}
+        with patch("pipeline.captions._open_ydl", return_value=self._ydl_with(info)), \
+             patch("pipeline.captions._download_json3", return_value=auto_json):
+            segs = captions.fetch_source_captions("https://x/y", "auto-detect")
+        self.assertEqual(["Hello world.", "Bye."], [s.text for s in segs])
 
     def test_returns_none_when_no_track(self):
         info = {"language": "en", "subtitles": {}, "automatic_captions": {}}

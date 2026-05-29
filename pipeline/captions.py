@@ -1,32 +1,29 @@
 """Fetch & normalize source captions (YouTube etc.) into Segment[].
 
 When a video URL already ships captions we prefer them over re-running Whisper:
-faster, cheaper, and often more accurate for proper nouns. Manual captions are
-used as-is (they carry punctuation); automatic captions are word-level but
-unpunctuated, so an LLM restores punctuation and we re-align the punctuated text
-back onto the original word timestamps. Any failure falls back to Whisper.
+faster, cheaper, and often more accurate for proper nouns.
+
+- Manual captions are used as-is (they already carry punctuation).
+- Automatic captions are word-level but unpunctuated. Rather than a slow LLM
+  punctuation-restore pass, we cut them into short segments at speech pauses
+  (a natural clause boundary) with word-level timestamps. The downstream
+  translation step then produces properly punctuated target-language text, so
+  the dub and subtitles read correctly without an extra model call.
+
+Any failure returns None so the caller falls back to Whisper.
 """
 
 from __future__ import annotations
 
 import json
 import re
-import time
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
-from . import config as _conf
-from .costs import CostTracker
 from .languages import language_code
-from .llm_client import get_translation_model, get_translation_provider, make_translation_client
-from .transcriber import Segment, _is_sentence_end
+from .transcriber import Segment
 
-import prompts as _prompts
-
-_SENT_END = re.compile(r"[.!?…。！？]+$")
-_PUNCT_STRIP = re.compile(r"^[\W_]+|[\W_]+$")  # strip leading/trailing non-word (unicode-aware)
-_RESTORE_WORKERS = 6  # parallel LLM calls for punctuation restore (one per chunk)
+_MAX_WORD_DUR = 0.6  # cap on a word's spoken length, so silent gaps survive as pauses
 
 
 @dataclass
@@ -120,145 +117,49 @@ def _parse_auto_words(data: dict) -> list[_Word]:
             continue
         deduped.append((text, t))
 
+    # End of a word ≈ start of the next, but capped at _MAX_WORD_DUR so a silent
+    # gap before the next word survives as a real pause (used to cut segments).
     words: list[_Word] = []
     for i, (text, t) in enumerate(deduped):
-        end = deduped[i + 1][1] if i + 1 < len(deduped) else t + 0.30
+        if i + 1 < len(deduped):
+            end = min(deduped[i + 1][1], t + _MAX_WORD_DUR)
+        else:
+            end = t + 0.30
         words.append(_Word(text=text, start=t, end=max(end, t)))
     return words
 
 
-def _norm(tok: str) -> str:
-    return _PUNCT_STRIP.sub("", tok).casefold()
+def _segment_auto_words(words: list[_Word], max_pause: float = 0.5,
+                        max_words: int = 20) -> list[Segment]:
+    """Group word-level auto-caption tokens into short segments at speech pauses.
 
-
-def _chunk_words(words: list[_Word], max_words: int = 120, max_gap: float = 2.0) -> list[list[_Word]]:
-    chunks: list[list[_Word]] = []
+    Cut at a silent gap (> ``max_pause``) or after ``max_words`` words. Each piece
+    is capitalized and gets a trailing period so ``merge_continuous_segments`` (which
+    otherwise merges lowercase-leading fragments) keeps the pieces separate; the
+    translation step then punctuates the target text. Timestamps stay word-level.
+    """
+    segs: list[Segment] = []
     cur: list[_Word] = []
+
+    def _flush() -> None:
+        if not cur:
+            return
+        text = " ".join(w.text for w in cur).strip()
+        if not text:
+            return
+        text = text[0].upper() + text[1:]
+        if text[-1] not in ".!?…":
+            text += "."
+        segs.append(Segment(id=len(segs), start=cur[0].start, end=cur[-1].end, text=text))
+
     for i, w in enumerate(words):
         cur.append(w)
-        gap_break = i + 1 < len(words) and (words[i + 1].start - w.end) > max_gap
-        if len(cur) >= max_words or gap_break:
-            chunks.append(cur)
+        gap = (words[i + 1].start - w.end) if i + 1 < len(words) else None
+        if len(cur) >= max_words or (gap is not None and gap > max_pause):
+            _flush()
             cur = []
-    if cur:
-        chunks.append(cur)
-    return chunks
-
-
-def _align_chunk(words: list[_Word], punctuated: str) -> list[Segment] | None:
-    if not words:
-        return []
-    tokens = punctuated.split()
-    if not tokens:
-        return None
-    if abs(len(tokens) - len(words)) / max(1, len(words)) > 0.15:
-        return None  # LLM altered the word stream → caller falls back
-
-    segs: list[Segment] = []
-    cur_words: list[_Word] = []
-    cur_text: list[str] = []
-    wi = 0
-    for tok in tokens:
-        # Punctuation-only tokens (e.g. a standalone "—") must not consume a word.
-        if _norm(tok) and wi < len(words):
-            cur_words.append(words[wi])
-            wi += 1
-        cur_text.append(tok)
-        if _SENT_END.search(tok) and _is_sentence_end(tok):
-            text = " ".join(cur_text).strip()
-            if cur_words and text:
-                segs.append(Segment(id=len(segs), start=cur_words[0].start,
-                                    end=cur_words[-1].end, text=text))
-            cur_words, cur_text = [], []
-    if cur_words and cur_text:
-        text = " ".join(cur_text).strip()
-        if text:
-            segs.append(Segment(id=len(segs), start=cur_words[0].start,
-                                end=cur_words[-1].end, text=text))
+    _flush()
     return segs
-
-
-def _together_extra() -> dict:
-    if get_translation_provider(_conf.get()) == "together":
-        return {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
-    return {}
-
-
-def _restore_punctuation(text: str, client, source_language: str,
-                         tracker: CostTracker | None = None) -> str:
-    cfg = _conf.get()
-    model = get_translation_model(cfg)
-    max_retries = cfg["translation"].get("max_retries", 3)
-    system_msg = _prompts.load("restore_punctuation", "system", source_language=source_language)
-    user_msg = _prompts.load("restore_punctuation", "user",
-                             source_language=source_language, text=text)
-    # qwen3 (Ollama) is a reasoning model; restoring punctuation needs no
-    # chain-of-thought. The /no_think soft switch disables it — without this a
-    # single call can take minutes. Together uses extra_body instead (below).
-    if get_translation_provider(cfg) == "ollama":
-        system_msg = "/no_think\n" + system_msg
-    # NOTE: no `response_format=json_schema` here. Ollama (qwen3-next:80b) hangs
-    # on strict structured output; a plain-text response returns in ~20s instead.
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_msg},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0.0,
-                **_together_extra(),
-            )
-            if tracker and getattr(response, "usage", None):
-                tracker.add_llm_usage(response.usage.prompt_tokens or 0,
-                                      response.usage.completion_tokens or 0)
-            return (response.choices[0].message.content or "").strip()
-        except Exception:  # transient API error
-            if attempt < max_retries:
-                time.sleep(2 ** attempt)
-            else:
-                raise
-    raise RuntimeError("punctuation restore exhausted retries")
-
-
-def _restore_one_chunk(chunk: list[_Word], client, source_language: str,
-                       tracker: CostTracker | None) -> list[Segment]:
-    raw_text = " ".join(w.text for w in chunk)
-    try:
-        punct = _restore_punctuation(raw_text, client, source_language, tracker)
-    except Exception as exc:
-        print(f"      [captions] punctuation restore failed: {exc}")
-        punct = None
-    segs = _align_chunk(chunk, punct) if punct else None
-    if not segs:  # None (mismatch) or empty → fallback: one segment per chunk
-        text = (punct or raw_text).strip()
-        segs = [Segment(id=0, start=chunk[0].start, end=chunk[-1].end, text=text)]
-    return segs
-
-
-def _restore_punctuation_and_align(words: list[_Word], client, source_language: str,
-                                   tracker: CostTracker | None = None,
-                                   workers: int = _RESTORE_WORKERS) -> list[Segment]:
-    chunks = _chunk_words(words)
-    if not chunks:
-        return []
-
-    # Chunks are independent LLM calls — run them in parallel but reassemble in
-    # timeline order so segment timestamps stay monotonic.
-    results: dict[int, list[Segment]] = {}
-    with ThreadPoolExecutor(max_workers=min(workers, len(chunks))) as pool:
-        futs = {pool.submit(_restore_one_chunk, c, client, source_language, tracker): i
-                for i, c in enumerate(chunks)}
-        for f in as_completed(futs):
-            results[futs[f]] = f.result()
-
-    all_segs: list[Segment] = []
-    for i in range(len(chunks)):
-        all_segs.extend(results[i])
-    for i, s in enumerate(all_segs):
-        s.id = i
-    return all_segs
 
 
 def _open_ydl():
@@ -274,9 +175,7 @@ def _download_json3(url: str, *, timeout: float = 30.0) -> dict:
         return json.loads(r.read())
 
 
-def fetch_source_captions(url: str, source_language: str = "auto-detect", *,
-                          llm_client=None,
-                          tracker: CostTracker | None = None) -> list[Segment] | None:
+def fetch_source_captions(url: str, source_language: str = "auto-detect") -> list[Segment] | None:
     """Return Segment[] from the URL's source-language captions, or None.
 
     None means no usable caption was found — the caller should run Whisper.
@@ -303,12 +202,7 @@ def fetch_source_captions(url: str, source_language: str = "auto-detect", *,
     if track.kind == "manual":
         segs = _parse_manual(data)
     else:
-        words = _parse_auto_words(data)
-        if not words:
-            return None
-        if llm_client is None:
-            llm_client = make_translation_client(_conf.get())
-        segs = _restore_punctuation_and_align(words, llm_client, source_language, tracker)
+        segs = _segment_auto_words(_parse_auto_words(data))
 
     if not segs:
         return None
