@@ -19,10 +19,10 @@ from typing import Callable
 
 from . import config as pipeline_config
 from .costs import CostTracker
-from .extractor import extract_audio, get_video_duration
+from .extractor import ensure_video_input, extract_audio, get_video_duration
 from .languages import language_code
 from .llm_client import make_transcription_client, make_translation_client
-from .merger import build_aligned_video, build_gap_chunks, generate_srt, prepare_merge
+from .merger import burn_subtitles, build_aligned_video, build_gap_chunks, generate_subtitle_files, generate_transcript, prepare_merge
 from .styles import StyleProfile, resolve as resolve_style
 from .transcriber import Segment, merge_continuous_segments, split_into_sentences, transcribe
 from .translator import translate_segments
@@ -45,6 +45,9 @@ class DubOptions:
     voiceover: bool = True                # mix original audio with the dub
     bake_voiceover: bool = True           # True (CLI): bake into video; False (API): export separate track
     subtitles: bool = True                # generate SRT alongside the video
+    subtitle_formats: tuple[str, ...] = ("srt",)
+    burn_subtitles: bool = False          # create a second video with subtitles burned in
+    prefer_source_captions: bool = True   # URL inputs: prefer YouTube captions over Whisper
 
     # BYOK overrides (used by the web app when a user supplies their own keys)
     together_api_key: str | None = None
@@ -57,8 +60,11 @@ class DubResult:
     aligned_segments: list[Segment]
     output_video_path: str
     output_srt_path: str | None
-    original_audio_path: str | None
     cost_tracker: CostTracker
+    subtitle_paths: dict[str, str] = field(default_factory=dict)
+    transcript_path: str | None = None
+    burned_video_path: str | None = None
+    original_audio_path: str | None = None
     steps: list[dict] = field(default_factory=list)
 
 
@@ -68,10 +74,13 @@ def dub_video(
     opts: DubOptions,
     *,
     output_srt_path: str | None = None,
+    transcript_path: str | None = None,
+    burned_video_path: str | None = None,
     original_audio_path: str | None = None,
     on_progress: ProgressCallback | None = None,
     is_cancelled: CancelCallback | None = None,
     tracker: CostTracker | None = None,
+    segments_override: list[Segment] | None = None,
 ) -> DubResult:
     """Run the full dubbing pipeline. Both the CLI and the API worker call this."""
     cfg = pipeline_config.get()
@@ -83,27 +92,33 @@ def dub_video(
         together_key_override=opts.together_api_key,
         openai_key_override=opts.openai_api_key,
     )
-    transcription_client = make_transcription_client(
-        cfg,
-        together_key_override=opts.together_api_key,
-        openai_key_override=opts.openai_api_key,
-    )
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="vidtrans_"))
     try:
         tracker.start_timer()
 
         _check_cancel(is_cancelled)
-        _emit(on_progress, 1, "Extracting audio…")
-        audio_path = extract_audio(input_path, str(tmp_dir / "audio.wav"))
         total_duration = get_video_duration(input_path)
+        video_input_path = ensure_video_input(input_path, str(tmp_dir / "audio_input.mp4"))
         tracker.audio_minutes = total_duration / 60.0
-        tracker.record_step("Audio extraction")
 
-        _check_cancel(is_cancelled)
-        _emit(on_progress, 2, f"Transcribing with Whisper Large v3… (duration: {total_duration:.0f}s)")
-        segments = transcribe(audio_path, transcription_client)
-        tracker.record_step("Transcription (Whisper)")
+        if segments_override is not None:
+            _emit(on_progress, 2, f"Using source captions ({len(segments_override)} segments)…")
+            segments = segments_override
+            tracker.record_step("Source captions")
+        else:
+            _emit(on_progress, 1, "Extracting audio…")
+            audio_path = extract_audio(input_path, str(tmp_dir / "audio.wav"))
+            tracker.record_step("Audio extraction")
+            transcription_client = make_transcription_client(
+                cfg,
+                together_key_override=opts.together_api_key,
+                openai_key_override=opts.openai_api_key,
+            )
+            _check_cancel(is_cancelled)
+            _emit(on_progress, 2, f"Transcribing with Whisper Large v3… (duration: {total_duration:.0f}s)")
+            segments = transcribe(audio_path, transcription_client)
+            tracker.record_step("Transcription (Whisper)")
 
         lang_code = language_code(opts.target_language)
         segments = merge_continuous_segments(segments)
@@ -134,7 +149,7 @@ def dub_video(
 
         mix_volume, original_audio_volume, gap_vol = _voiceover_volumes(opts, cfg)
         plan = prepare_merge(
-            input_path, translated, total_duration,
+            video_input_path, translated, total_duration,
             preserve_gap_audio=opts.voiceover,
             mix_volume=mix_volume,
             original_audio_volume=original_audio_volume,
@@ -170,15 +185,34 @@ def dub_video(
         _check_cancel(is_cancelled)
         _emit(on_progress, 5, "Building aligned video…")
         aligned_segments = build_aligned_video(
-            input_path, translated, tts_paths, total_duration, output_video_path,
+            video_input_path, translated, tts_paths, total_duration, output_video_path,
             merge_plan=plan,
             original_audio_path=original_audio_path,
         )
 
+        subtitle_paths: dict[str, str] = {}
         if output_srt_path is not None and opts.subtitles:
-            generate_srt(aligned_segments, output_srt_path)
+            subtitle_paths = generate_subtitle_files(
+                aligned_segments,
+                output_srt_path,
+                formats=opts.subtitle_formats,
+            )
         else:
             output_srt_path = None
+
+        if transcript_path is None:
+            transcript_path = str(Path(output_video_path).with_suffix(".transcript.txt"))
+        generate_transcript(aligned_segments, transcript_path)
+
+        if opts.burn_subtitles:
+            srt_path = subtitle_paths.get("srt")
+            if not srt_path:
+                raise RuntimeError("Burned subtitles require SRT subtitle generation.")
+            if burned_video_path is None:
+                burned_video_path = str(Path(output_video_path).with_stem(Path(output_video_path).stem + "_subtitled"))
+            burn_subtitles(output_video_path, srt_path, burned_video_path)
+        else:
+            burned_video_path = None
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -187,6 +221,9 @@ def dub_video(
         aligned_segments=aligned_segments,
         output_video_path=output_video_path,
         output_srt_path=output_srt_path,
+        subtitle_paths=subtitle_paths,
+        transcript_path=transcript_path,
+        burned_video_path=burned_video_path,
         original_audio_path=original_audio_path,
         cost_tracker=tracker,
         steps=list(tracker._steps),
