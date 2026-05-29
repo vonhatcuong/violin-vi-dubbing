@@ -12,7 +12,9 @@ Examples:
 
 import argparse
 import json
+import shutil
 import sys
+import tempfile
 import warnings
 from pathlib import Path
 
@@ -21,6 +23,8 @@ warnings.filterwarnings("ignore")
 from dotenv import load_dotenv
 
 from pipeline import config as pipeline_config
+from pipeline.captions import fetch_source_captions
+from pipeline.downloader import download_url_to_file, is_url
 from pipeline.orchestrator import DubOptions, dub_video
 from pipeline.styles import list_styles, resolve as resolve_style
 
@@ -71,7 +75,10 @@ def translate_video(
     source_language: str = "auto-detect",
     style=None,
     voiceover: bool = True,
+    subtitle_formats: tuple[str, ...] = ("srt",),
+    burn_subtitles: bool = False,
     timings_out: str | None = None,
+    prefer_source_captions: bool = True,
 ) -> None:
     if style is None:
         style = resolve_style("standard")
@@ -91,21 +98,44 @@ def translate_video(
         voiceover=voiceover,
         bake_voiceover=True,
         subtitles=subtitles,
+        subtitle_formats=subtitle_formats,
+        burn_subtitles=burn_subtitles,
     )
 
-    result = dub_video(
-        input_path,
-        output_path,
-        opts,
-        output_srt_path=srt_path,
-        original_audio_path=orig_audio_path,
-        on_progress=lambda step, msg: print(f"\n[{step}/5] {msg}"),
-    )
+    tmp_download_dir = None
+    try:
+        effective_input = input_path
+        segments_override = None
+        if is_url(input_path):
+            tmp_download_dir = tempfile.mkdtemp(prefix="violin_url_")
+            print(f"\n[0/5] Downloading media URL…")
+            effective_input = str(download_url_to_file(input_path, tmp_download_dir))
+            if prefer_source_captions:
+                print(f"\n[0/5] Checking for source captions…")
+                segments_override = fetch_source_captions(input_path, source_language)
+
+        result = dub_video(
+            effective_input,
+            output_path,
+            opts,
+            output_srt_path=srt_path,
+            burned_video_path=str(out_p.with_stem(out_p.stem + "_subtitled")) if burn_subtitles else None,
+            original_audio_path=orig_audio_path,
+            on_progress=lambda step, msg: print(f"\n[{step}/5] {msg}"),
+            segments_override=segments_override,
+        )
+    finally:
+        if tmp_download_dir:
+            shutil.rmtree(tmp_download_dir, ignore_errors=True)
 
     if result.original_audio_path:
         print(f"      Original audio → {result.original_audio_path}")
-    if result.output_srt_path:
-        print(f"      Subtitles → {result.output_srt_path}")
+    for fmt, path in result.subtitle_paths.items():
+        print(f"      Subtitles ({fmt}) → {path}")
+    if result.burned_video_path:
+        print(f"      Burned-subtitle video → {result.burned_video_path}")
+    if result.transcript_path:
+        print(f"      Transcript → {result.transcript_path}")
 
     print(f"\nDone! Output → {result.output_video_path}")
     result.cost_tracker.print_summary()
@@ -124,7 +154,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Translate a video to another language using Together AI."
     )
-    parser.add_argument("input", nargs="?", help="Input video file path")
+    parser.add_argument("input", nargs="?", help="Input media file path or URL")
     parser.add_argument("output", nargs="?", help="Output video file path")
     parser.add_argument(
         "--language", "-l", default=None,
@@ -141,6 +171,14 @@ def main() -> None:
     parser.add_argument(
         "--no-subtitles", action="store_true",
         help="Skip generating SRT subtitle file"
+    )
+    parser.add_argument(
+        "--subtitle-formats", default="srt",
+        help="Comma-separated subtitle formats to write: srt,vtt,txt (default: srt)"
+    )
+    parser.add_argument(
+        "--burn-subtitles", action="store_true",
+        help="Also write a second video with subtitles burned into the picture"
     )
     parser.add_argument(
         "--voiceover", action="store_true", default=None,
@@ -162,6 +200,10 @@ def main() -> None:
     parser.add_argument(
         "--timings-out", default=None,
         help="Write per-step wall-clock timings as JSON to this path on success"
+    )
+    parser.add_argument(
+        "--no-source-captions", action="store_true",
+        help="Always transcribe with Whisper instead of reusing the video's captions (URL input)"
     )
     parser.add_argument(
         "--install-skill", action="store_true",
@@ -201,6 +243,16 @@ def main() -> None:
 
     style_name = args.style or pipeline_config.get()["preferences"].get("style", "standard")
     style = resolve_style(style_name)
+    subtitle_formats = tuple(
+        fmt.strip().lower()
+        for fmt in args.subtitle_formats.split(",")
+        if fmt.strip()
+    ) or ("srt",)
+
+    prefer_source_captions = (
+        pipeline_config.get()["transcription"].get("prefer_source_captions", True)
+        and not args.no_source_captions
+    )
 
     translate_video(
         args.input,
@@ -211,7 +263,10 @@ def main() -> None:
         args.source_language,
         style,
         voiceover,
+        subtitle_formats=subtitle_formats,
+        burn_subtitles=args.burn_subtitles,
         timings_out=args.timings_out,
+        prefer_source_captions=prefer_source_captions,
     )
 
 
