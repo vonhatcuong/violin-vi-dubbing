@@ -87,3 +87,18 @@ def _select_track(info: dict, src: str | None) -> _TrackRef | None:
         if u:
             return _TrackRef("manual", k, u)
     return None
+
+
+def _parse_manual(data: dict) -> list[Segment]:
+    out: list[Segment] = []
+    for ev in data.get("events") or []:
+        segs = ev.get("segs")
+        if not segs:
+            continue
+        text = re.sub(r"\s+", " ", "".join(s.get("utf8", "") for s in segs)).strip()
+        if not text:
+            continue
+        start = (ev.get("tStartMs") or 0) / 1000.0
+        dur = (ev.get("dDurationMs") or 0) / 1000.0
+        out.append(Segment(id=len(out), start=start, end=start + dur, text=text))
+    return out

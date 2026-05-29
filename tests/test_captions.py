@@ -42,5 +42,22 @@ class SelectTrackTests(unittest.TestCase):
         self.assertIsNone(captions._select_track(info, None))
 
 
+class ParseManualTests(unittest.TestCase):
+    def test_cue_events_become_segments_with_timestamps(self):
+        data = {"events": [
+            {"tStartMs": 13240, "dDurationMs": 2560,
+             "segs": [{"utf8": "A few years ago,\nI broke in."}]},
+            {"tStartMs": 16880, "dDurationMs": 1216,
+             "segs": [{"utf8": "I had just driven home,"}]},
+            {"tStartMs": 9999, "segs": [{"utf8": "  \n "}]},  # blank → dropped
+        ]}
+        segs = captions._parse_manual(data)
+        self.assertEqual(2, len(segs))
+        self.assertEqual("A few years ago, I broke in.", segs[0].text)
+        self.assertAlmostEqual(13.24, segs[0].start, places=2)
+        self.assertAlmostEqual(15.80, segs[0].end, places=2)
+        self.assertEqual([0, 1], [s.id for s in segs])
+
+
 if __name__ == "__main__":
     unittest.main()
