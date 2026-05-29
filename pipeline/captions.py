@@ -164,7 +164,8 @@ def _align_chunk(words: list[_Word], punctuated: str) -> list[Segment] | None:
     cur_text: list[str] = []
     wi = 0
     for tok in tokens:
-        if wi < len(words):
+        # Punctuation-only tokens (e.g. a standalone "—") must not consume a word.
+        if _norm(tok) and wi < len(words):
             cur_words.append(words[wi])
             wi += 1
         cur_text.append(tok)
