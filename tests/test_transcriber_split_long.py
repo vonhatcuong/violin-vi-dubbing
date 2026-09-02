@@ -26,6 +26,10 @@ def test_short_or_wordless_segments_untouched():
     nowords = Segment(id=0, start=0.0, end=30.0, text="x " * 50)
     out = split_long_segments([short, nowords], max_seconds=12.0)
     assert out[0].text == "a b." and out[1].end == 30.0 and len(out) == 2
+    # Pass-through segments (untouched by _split_one) must be renumbered on
+    # copies, not mutated in place — the caller's original objects keep id=0.
+    assert short.id == 0 and nowords.id == 0
+    assert [s.id for s in out] == [0, 1]
 
 
 def test_min_piece_respected_and_recursive():

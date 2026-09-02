@@ -201,7 +201,10 @@ def assign_voices(
                     female_i += 1
             else:
                 if bank_defaults is None:
-                    bank_defaults = native_voices_for("vi", bank=bank)
+                    try:
+                        bank_defaults = native_voices_for("vi", bank=bank)
+                    except RuntimeError:
+                        bank_defaults = (default_voice, default_voice)
                 male, female = bank_defaults
                 out[spk] = female if gender == "female" else male
         elif rr_pool:
@@ -251,7 +254,7 @@ def guess_genders(audio_path: str, segments: list["Segment"]) -> dict[str, str]:
         totals[spk] += len(piece)
 
     frame, hop = 640, 320
-    lag_min, lag_max = 40, 228
+    lag_min, lag_max = int(sr / 400), int(sr / 70)  # ~70-400 Hz search band, at 16 kHz: 40, 228
     out: dict[str, str] = {}
     for spk in order:
         pieces = chunks.get(spk) or []

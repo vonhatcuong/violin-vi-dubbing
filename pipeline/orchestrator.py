@@ -66,7 +66,7 @@ class DubOptions:
     burn_subtitles: bool = False          # create a second video with subtitles burned in
     prefer_source_captions: bool = True   # URL inputs: prefer YouTube captions over Whisper
     fit: bool | None = None               # None → config fit.enabled; duration fitter (local dubbing)
-    speakers: str = "1"                   # "1" (off) | "auto" (auto-detect count) | "N" (fixed speaker count)
+    speakers: str | None = None           # None → follow diarization.enabled | "1" (off) | "auto" (auto-detect count) | "N" (fixed speaker count)
     voice_map: dict[str, str] | None = None  # explicit SPEAKER_xx → voice name overrides
 
     # BYOK overrides (used by the web app when a user supplies their own keys)
@@ -75,7 +75,7 @@ class DubOptions:
     elevenlabs_api_key: str | None = None
 
     def __post_init__(self) -> None:
-        if not valid_speakers_value(self.speakers):
+        if self.speakers is not None and not valid_speakers_value(self.speakers):
             raise ValueError(
                 f'DubOptions.speakers must be "auto" or a positive integer string (no leading zero), '
                 f'got {self.speakers!r}'
@@ -160,7 +160,8 @@ def dub_video(
         dcfg = cfg.get("diarization", {})
         tts_provider = cfg.get("models", {}).get("tts", {}).get("provider")
         voice_map: dict[str, str] = {}
-        if opts.speakers != "1" or bool(dcfg.get("enabled", False)):
+        run_diarization = bool(dcfg.get("enabled", False)) if opts.speakers is None else opts.speakers != "1"
+        if run_diarization:
             _check_cancel(is_cancelled)
             if audio_path is None:
                 audio_path = extract_audio(input_path, str(tmp_dir / "audio.wav"))
@@ -168,7 +169,7 @@ def dub_video(
             hf_token_env = dcfg.get("hf_token_env")
             if opts.speakers == "auto":
                 num_speakers = None
-            elif opts.speakers == "1":
+            elif opts.speakers is None:
                 # Only reachable via diarization.enabled with no explicit --speakers —
                 # never force a single cluster; fall back to config or full auto-detect.
                 num_speakers = dcfg.get("num_speakers") or None
@@ -209,6 +210,7 @@ def dub_video(
                 voice_map = assign_voices(
                     speakers_order, effective_voice, opts.voice_map, seed_voice=opts.voice,
                 )
+            print(f"      [speakers] {len(voice_map)} speakers → {voice_map}")
             voices_json_path = Path(output_video_path).with_suffix(".voices.json")
             voices_json_path.write_text(json.dumps(voice_map, ensure_ascii=False, indent=2), encoding="utf-8")
 

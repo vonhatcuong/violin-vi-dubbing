@@ -216,3 +216,94 @@ def test_label_segments_ecapa_absorbs_small_cluster(tmp_path, monkeypatch):
 
     labels = diarizer.label_segments(str(tmp_path / "a.wav"), segs, backend="ecapa")
     assert len(set(labels)) == 2
+
+
+def test_label_segments_ecapa_fixed_num_speakers_skips_absorption(tmp_path, monkeypatch):
+    pytest.importorskip("scipy")
+    import soundfile as sf
+
+    sr = 16000
+    sf.write(tmp_path / "a.wav", np.zeros(sr * 7, dtype=np.float32), sr)
+    # 5 "majority" segments near [1,0], 2 "minority" segments near [0,1] — the minority
+    # cluster (2 < default min_cluster_segments=3) would normally be absorbed into the
+    # majority in auto mode, but num_speakers=2 is a user-fixed count.
+    segs = [Segment(id=i, start=i * 1.0, end=i * 1.0 + 0.8, text="s") for i in range(7)]
+
+    def fake_loader(model, device):
+        def embed(wav_crop, sr, t0):
+            return np.array([1.0, 0.0]) if t0 < 5.0 else np.array([0.0, 1.0])
+        return embed
+
+    monkeypatch.setattr(diarizer, "_load_ecapa_embedder", fake_loader)
+
+    labels = diarizer.label_segments(str(tmp_path / "a.wav"), segs, backend="ecapa", num_speakers=2)
+    assert labels == ["SPEAKER_00"] * 5 + ["SPEAKER_01"] * 2
+
+
+def test_label_segments_ecapa_auto_mode_never_absorbs_down_to_one_speaker(tmp_path, monkeypatch):
+    import soundfile as sf
+
+    sr = 16000
+    sf.write(tmp_path / "a.wav", np.zeros(sr * 11, dtype=np.float32), sr)
+    segs = [Segment(id=i, start=i * 2.0, end=i * 2.0 + 1.5, text="s") for i in range(5)]
+    segs.append(Segment(id=5, start=10.5, end=11.0, text="s"))  # 0.5 s minority speaker
+
+    def fake_loader(model, device):
+        def embed(wav_crop, sr, t0):
+            return np.array([1.0, 0.0]) if t0 < 10.0 else np.array([0.0, 1.0])
+        return embed
+
+    def fake_cluster(embs, num_speakers=None, max_speakers=4, threshold=0.65):
+        # 1 large cluster (5 members) + 1 tiny cluster (1 member) — absorption would
+        # normally fold the tiny cluster into the large one, leaving a single speaker.
+        return [0, 0, 0, 0, 0, 1]
+
+    monkeypatch.setattr(diarizer, "_load_ecapa_embedder", fake_loader)
+    monkeypatch.setattr(diarizer, "cluster_embeddings", fake_cluster)
+
+    labels = diarizer.label_segments(str(tmp_path / "a.wav"), segs, backend="ecapa")
+    assert len(set(labels)) == 2
+    assert labels == ["SPEAKER_00"] * 5 + ["SPEAKER_01"]
+
+
+def test_label_segments_ecapa_all_embeddings_fail_raises(tmp_path, monkeypatch):
+    import soundfile as sf
+
+    sr = 16000
+    sf.write(tmp_path / "a.wav", np.zeros(sr * 3, dtype=np.float32), sr)
+    segs = [Segment(id=i, start=i * 1.0, end=i * 1.0 + 0.8, text="s") for i in range(3)]
+
+    def fake_loader(model, device):
+        def embed(wav_crop, sr, t0):
+            raise RuntimeError("boom")
+        return embed
+
+    monkeypatch.setattr(diarizer, "_load_ecapa_embedder", fake_loader)
+
+    with pytest.raises(RuntimeError, match="3 speaker embeddings failed"):
+        diarizer.label_segments(str(tmp_path / "a.wav"), segs, backend="ecapa")
+
+
+def test_label_segments_ecapa_partial_embedding_failure_warns_and_inherits(tmp_path, monkeypatch, capsys):
+    pytest.importorskip("scipy")
+    import soundfile as sf
+
+    sr = 16000
+    sf.write(tmp_path / "a.wav", np.zeros(sr * 3, dtype=np.float32), sr)
+    segs = [Segment(id=i, start=i * 1.0, end=i * 1.0 + 0.8, text="s") for i in range(3)]
+
+    def fake_loader(model, device):
+        def embed(wav_crop, sr, t0):
+            if 0.9 < t0 < 1.1:
+                raise RuntimeError("fail seg 1")
+            return np.array([1.0, 0.0])
+        return embed
+
+    monkeypatch.setattr(diarizer, "_load_ecapa_embedder", fake_loader)
+
+    labels = diarizer.label_segments(str(tmp_path / "a.wav"), segs, backend="ecapa")
+    assert labels[1] == labels[0]  # failed segment inherits the previous label
+
+    out = capsys.readouterr().out
+    assert "1 speaker embedding(s) failed" in out
+    assert "fail seg 1" in out

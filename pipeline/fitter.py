@@ -138,9 +138,14 @@ def _measure(units: list[DubUnit], fcfg: dict | None = None) -> None:
 
     When `fcfg["min_fill"] > 0`, a unit whose speech fills less than that
     share of its slot is gently slowed (ffmpeg `atempo`, pitch kept, never
-    below `fcfg["min_tempo"]`) before the overrun is computed.
+    below `fcfg["min_tempo"]`) before the overrun is computed. `min_fill` is
+    clamped to `[0.0, 1.0]`.
     """
     min_fill = float((fcfg or {}).get("min_fill", 0.0))
+    if not 0.0 <= min_fill <= 1.0:
+        clamped = max(0.0, min(1.0, min_fill))
+        print(f"      [fit] WARN: min_fill={min_fill} out of [0.0, 1.0] — clamping to {clamped}")
+        min_fill = clamped
     min_tempo = float((fcfg or {}).get("min_tempo", 0.85))
     over = 0
     for i, unit in enumerate(units):

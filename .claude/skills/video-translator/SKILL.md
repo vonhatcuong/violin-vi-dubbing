@@ -49,7 +49,7 @@ violin <input-file-or-url> <output> --language <Lang> [flags]
 | `--burn-subtitles` | off | User wants subtitles burned into a second MP4. |
 | `--no-subtitles` | off | User says "no subtitles" / "video only". |
 | `--no-voiceover` | off | User says "replace original audio entirely". |
-| `--config` / `-c` | `config/default.yaml` | Use `config/local_mac.yaml` for local faster-whisper + Edge-TTS Vietnamese jobs. |
+| `--config` / `-c` | `config/default.yaml` | Use `config/local_mac.yaml` for local faster-whisper + Ollama gemma4 + VieNeu-TTS (fully local) Vietnamese jobs. |
 | `--timings-out` | off | Only when the user wants a per-step timing JSON for debugging / benchmarking. |
 | `--speakers {1,auto,N}` | `1` (off) | Multiple speakers, each in their own voice: `auto` clusters speakers automatically, a fixed `N` skips clustering. Local-only feature (needs the diarizer). |
 | `--voice-map` | none | Explicit per-speaker voices, e.g. `"SPEAKER_00=Phạm Tuyên,SPEAKER_01=Ngọc Huyền"`; use with `--speakers`. |

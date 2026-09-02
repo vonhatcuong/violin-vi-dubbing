@@ -188,8 +188,11 @@ def _crop_bounds(start_s: float, end_s: float, sr: int, n_samples: int, min_seco
 
 def _load_ecapa_embedder(model: str, device: str) -> Callable[[np.ndarray, int, float], np.ndarray]:
     """Return `embed(wav_crop, sr, t0) -> embedding` backed by a speechbrain ECAPA encoder."""
-    import torch
-    from speechbrain.inference.speaker import EncoderClassifier
+    try:
+        import torch
+        from speechbrain.inference.speaker import EncoderClassifier
+    except ImportError as exc:
+        raise ImportError("install the GPU extras: uv sync --extra local-gpu") from exc
 
     from .devices import pick_device
 
@@ -228,18 +231,30 @@ def _label_ecapa(
 
     valid_idx = []
     embs = []
+    n_eligible = 0
+    n_failed = 0
+    first_error: Exception | None = None
     for i, seg in enumerate(segments):
         if seg.end - seg.start < 0.3:
             continue
         s0, s1 = _crop_bounds(seg.start, seg.end, sr, n_samples)
         if s1 <= s0:
             continue
+        n_eligible += 1
         try:
             e = embed(wav[s0:s1], sr, seg.start)
-        except Exception:
+        except Exception as exc:
+            n_failed += 1
+            if first_error is None:
+                first_error = exc
             continue
         valid_idx.append(i)
         embs.append(e)
+
+    if n_failed:
+        print(f"      [diarizer] WARN: {n_failed} speaker embedding(s) failed (first: {first_error})")
+    if n_eligible and not embs:
+        raise RuntimeError(f"diarization: all {n_eligible} speaker embeddings failed: {first_error}")
 
     labels: list[str | None] = [None] * len(segments)
     if embs:
@@ -247,10 +262,15 @@ def _label_ecapa(
         clustered = cluster_embeddings(
             embs_arr, num_speakers=num_speakers, max_speakers=max_speakers, threshold=threshold
         )
-        durations = [segments[i].end - segments[i].start for i in valid_idx]
-        clustered = absorb_small_clusters(
-            clustered, embs_arr, durations, min_segments=min_cluster_segments, min_seconds=min_cluster_seconds
-        )
+        # A user-fixed count must not be second-guessed by absorption; in auto mode,
+        # never let absorption collapse 2+ clusters down to a single speaker.
+        if num_speakers is None:
+            durations = [segments[i].end - segments[i].start for i in valid_idx]
+            absorbed = absorb_small_clusters(
+                clustered, embs_arr, durations, min_segments=min_cluster_segments, min_seconds=min_cluster_seconds
+            )
+            if not (len(set(clustered)) >= 2 and len(set(absorbed)) < 2):
+                clustered = absorbed
         for idx, lab in zip(valid_idx, relabel_by_first_appearance(clustered)):
             labels[idx] = lab
 
@@ -271,7 +291,10 @@ def _label_pyannote(
     hf_token: str | None,
     device: str,
 ) -> list[str]:
-    from pyannote.audio import Pipeline
+    try:
+        from pyannote.audio import Pipeline
+    except ImportError as exc:
+        raise ImportError("install the GPU extras: uv sync --extra local-gpu") from exc
 
     from .devices import pick_device
 

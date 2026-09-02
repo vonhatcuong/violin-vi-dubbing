@@ -3,7 +3,7 @@
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -262,9 +262,9 @@ def split_long_segments(segments: list["Segment"], max_seconds: float, min_piece
     out: list[Segment] = []
     for seg in segments:
         out.extend(_split_one(seg, max_seconds, min_piece_seconds, long_gap_seconds))
-    for i, s in enumerate(out):
-        s.id = i
-    return out
+    # Renumber on copies — pass-through segments (untouched by _split_one) are the
+    # same objects as in `segments`, and must not be mutated out from under the caller.
+    return [replace(s, id=i) for i, s in enumerate(out)]
 
 
 def _is_valid(s: dict | object) -> bool:

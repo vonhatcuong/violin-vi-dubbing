@@ -121,6 +121,22 @@ def test_assign_voices_seed_voice_yields_to_explicit_voice_map_speaker():
     assert out["B"] == "Custom Seed"  # first speaker NOT covered by voice_map
 
 
+def test_assign_voices_gender_no_match_falls_back_to_default_voice_when_bank_empty(tmp_path):
+    # speaker_voices has only a male preset; the speaker is female, so the gender
+    # pool is empty and it falls through to native_voices_for(bank=...) — an empty
+    # bank dir makes that raise RuntimeError, which must fall back to default_voice
+    # instead of aborting.
+    out = voices.assign_voices(
+        ["A"],
+        default_voice="fallback",
+        genders={"A": "female"},
+        speaker_voices=["Thanh Bình"],
+        preset_genders={"Thanh Bình": "male"},
+        bank=tmp_path,  # empty dir → no catalog.yaml → native_voices_for raises
+    )
+    assert out == {"A": "fallback"}
+
+
 def test_preset_genders_matches_config_default():
     cfg = yaml.safe_load((_REPO_ROOT / "config" / "default.yaml").read_text(encoding="utf-8"))
     assert voices.PRESET_GENDERS == cfg["voices"]["preset_genders"]

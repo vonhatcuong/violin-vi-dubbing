@@ -39,3 +39,12 @@ def test_min_fill_zero_disables(tmp_path):
     units = fitter.build_units([seg], [10.0], {}, "nam-1")
     fitter.fit_audio(units, _synth_fixed(3.0), str(tmp_path), FCFG | {"min_fill": 0.0})
     assert units[0].tempo == 1.0 and units[0].tts_dur == pytest.approx(3.0, abs=0.02)
+
+
+def test_min_fill_above_one_clamped_to_one(tmp_path, capsys):
+    seg = Segment(id=0, start=0.0, end=10.0, text="x")
+    units = fitter.build_units([seg], [10.0], {}, "nam-1")
+    fitter.fit_audio(units, _synth_fixed(9.0), str(tmp_path), FCFG | {"min_fill": 6})
+    # min_fill=6 must behave exactly like min_fill=1.0 (tempo = max(min_tempo, 9/10)).
+    assert units[0].tempo == pytest.approx(0.9, abs=0.01)
+    assert "clamp" in capsys.readouterr().out.lower()

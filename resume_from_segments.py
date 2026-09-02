@@ -132,15 +132,31 @@ def _load_voice_map(path: Path) -> dict[str, str] | None:
     return voice_map
 
 
-def _check_fit_stage(cfg: dict, stage: str) -> str | None:
-    """Return an error message when resuming would bypass the duration fitter.
+_RESUMABLE_STAGES = {"transcribed", "translated", "fitted"}
 
-    ``fit.enabled`` configs (local presets) rely on the fitter's budgets,
-    shortening, and pause borrowing to line up TTS with the source timing.
-    Resuming from a "transcribed" or "translated" checkpoint would skip that
-    stage entirely and go straight to plain TTS + merge, silently dropping
-    the fit — only the "fitted" checkpoint already carries its output.
+
+def _check_fit_stage(cfg: dict, stage: str) -> str | None:
+    """Return an error message when resuming from *stage* would be unsafe.
+
+    Checkpoints other than "transcribed"/"translated"/"fitted" — e.g.
+    "diarized" or "sentences" — still hold source-language text; feeding
+    them straight to TTS would dub the video in the wrong language. This
+    check applies regardless of ``fit.enabled``.
+
+    ``fit.enabled`` configs (local presets) additionally rely on the fitter's
+    budgets, shortening, and pause borrowing to line up TTS with the source
+    timing. Resuming from a "transcribed" or "translated" checkpoint would
+    skip that stage entirely and go straight to plain TTS + merge, silently
+    dropping the fit — only the "fitted" checkpoint already carries its
+    output.
     """
+    if stage not in _RESUMABLE_STAGES:
+        return (
+            f"'{stage}' is not a checkpoint this script can resume from "
+            f"(expected one of {sorted(_RESUMABLE_STAGES)}). Earlier checkpoints "
+            "like 'diarized' or 'sentences' still hold source-language text — "
+            "feeding them to TTS would produce a garbage dub."
+        )
     if cfg.get("fit", {}).get("enabled") and stage != "fitted":
         return (
             f"config has fit.enabled=true, but --segments is a '{stage}' checkpoint. "

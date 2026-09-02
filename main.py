@@ -111,7 +111,7 @@ def translate_video(
     prefer_source_captions: bool = True,
     fit: bool | None = None,
     subtitle_lang: str | None = None,
-    speakers: str = "1",
+    speakers: str | None = None,
     voice_map: dict[str, str] | None = None,
 ) -> None:
     if style is None:
@@ -257,8 +257,9 @@ def main() -> None:
         help="Disable the duration fitter even if the config enables it (local dubbing)",
     )
     parser.add_argument(
-        "--speakers", type=_speakers_type, default="1",
-        help='Diarize and assign a voice per speaker: "1" (default, off), "auto" (auto-detect count), '
+        "--speakers", type=_speakers_type, default=None,
+        help='Diarize and assign a voice per speaker: unset (default) follows config diarization.enabled, '
+             '"1" forces diarization off, "auto" auto-detects the speaker count, '
              'or a fixed count like "3"'
     )
     parser.add_argument(
