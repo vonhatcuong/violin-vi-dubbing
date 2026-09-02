@@ -103,6 +103,39 @@ def assign_by_overlap(segments: list["Segment"], turns: list[Turn]) -> list[str]
     return out
 
 
+def _crop_bounds(start_s: float, end_s: float, sr: int, n_samples: int, min_seconds: float = 0.5) -> tuple[int, int]:
+    """Sample-index crop window for a sentence, clamped to `[0, n_samples]` and padded to
+    `min_seconds` where the file is long enough to hold it.
+
+    Clamps `[start_s, end_s]` to file bounds first, then grows the (already-clamped) window
+    up to `min_seconds`, pushing any padding that would fall outside `[0, n_samples]` on one
+    side over to the other side. The result is always within bounds and is never shorter than
+    the input segment.
+    """
+    min_samples = int(round(min_seconds * sr))
+    s0 = max(0, min(n_samples, int(round(start_s * sr))))
+    s1 = max(0, min(n_samples, int(round(end_s * sr))))
+    if s1 < s0:
+        s1 = s0
+
+    deficit = min_samples - (s1 - s0)
+    if deficit > 0:
+        left = deficit // 2
+        right = deficit - left
+        s0 -= left
+        s1 += right
+        if s0 < 0:
+            s1 += -s0
+            s0 = 0
+        if s1 > n_samples:
+            s0 -= s1 - n_samples
+            s1 = n_samples
+        s0 = max(0, s0)
+        s1 = min(n_samples, s1)
+
+    return s0, s1
+
+
 def _load_ecapa_embedder(model: str, device: str) -> Callable[[np.ndarray, int, float], np.ndarray]:
     """Return `embed(wav_crop, sr, t0) -> embedding` backed by a speechbrain ECAPA encoder."""
     import torch
@@ -138,7 +171,6 @@ def _label_ecapa(
     if wav.ndim > 1:
         wav = wav.mean(axis=1)
     n_samples = len(wav)
-    min_samples = int(round(0.5 * sr))
 
     embed = _load_ecapa_embedder(model, device)
 
@@ -147,14 +179,7 @@ def _label_ecapa(
     for i, seg in enumerate(segments):
         if seg.end - seg.start < 0.3:
             continue
-        s0 = int(round(seg.start * sr))
-        s1 = int(round(seg.end * sr))
-        if s1 - s0 < min_samples:
-            deficit = min_samples - (s1 - s0)
-            s0 -= deficit // 2
-            s1 += deficit - deficit // 2
-        s0 = max(0, s0)
-        s1 = min(n_samples, s1)
+        s0, s1 = _crop_bounds(seg.start, seg.end, sr, n_samples)
         if s1 <= s0:
             continue
         try:

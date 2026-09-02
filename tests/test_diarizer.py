@@ -43,6 +43,44 @@ def test_relabel_by_first_appearance():
     ]
 
 
+def test_crop_bounds_interior_short_segment_centred():
+    sr = 16000
+    n_samples = 10 * sr  # 10 s file
+    s0, s1 = diarizer._crop_bounds(5.0, 5.2, sr, n_samples)
+    assert s1 - s0 == int(round(0.5 * sr))
+    # centred on the original [5.0, 5.2] window's midpoint (5.1 s)
+    mid = (s0 + s1) / 2
+    assert mid == pytest.approx(5.1 * sr)
+
+
+def test_crop_bounds_overshoots_file_end():
+    sr = 16000
+    n_samples = int(round(2.0 * sr))  # 2.0 s file
+    s0, s1 = diarizer._crop_bounds(1.9, 5.0, sr, n_samples)
+    assert (s0, s1) == (int(round(1.5 * sr)), int(round(2.0 * sr)))
+
+
+def test_crop_bounds_at_file_start():
+    sr = 16000
+    n_samples = 10 * sr  # long enough file
+    s0, s1 = diarizer._crop_bounds(0.0, 0.1, sr, n_samples)
+    assert (s0, s1) == (0, int(round(0.5 * sr)))
+
+
+def test_crop_bounds_file_shorter_than_min():
+    sr = 16000
+    n_samples = int(round(0.25 * sr))  # file shorter than 0.5 s
+    s0, s1 = diarizer._crop_bounds(0.1, 0.15, sr, n_samples)
+    assert (s0, s1) == (0, n_samples)
+
+
+def test_crop_bounds_segment_already_long_enough():
+    sr = 16000
+    n_samples = 10 * sr
+    s0, s1 = diarizer._crop_bounds(1.0, 2.0, sr, n_samples)
+    assert (s0, s1) == (int(round(1.0 * sr)), int(round(2.0 * sr)))
+
+
 def test_assign_by_overlap_and_nearest():
     turns = [Turn(0.0, 5.0, "A"), Turn(5.0, 10.0, "B")]
     segs = [
