@@ -136,40 +136,77 @@ def assign_voices(
     bank: Path | None = None,
     speaker_voices: list[str] | None = None,
     preset_genders: dict[str, str] | None = None,
+    seed_voice: str | None = None,
 ) -> dict[str, str]:
-    """speaker → voice name. Priority: explicit map > detected gender > default.
+    """speaker → voice name. Priority: explicit map > seed voice > detected gender > round-robin > default.
 
     - `voice_map[spk]` always wins.
-    - Known gender + `speaker_voices` given: first name in `speaker_voices` whose
-      gender (via `preset_genders`, default `PRESET_GENDERS`) matches; if none
-      matches, falls back to the voice bank's male/female pick (`native_voices_for`).
-    - Unknown gender: round-robin over `speaker_voices` in order of first
-      appearance (old behaviour — falls back to `default_voice` — when
+    - `seed_voice`, if given, goes to the first speaker (in `speakers` order)
+      not already covered by `voice_map` — this is how an explicit
+      `--voice`/`opts.voice` survives once `speaker_voices` is populated
+      (its round-robin/gender cursors would otherwise never fall through to
+      `default_voice`, silently discarding the user's choice).
+    - Known gender + `speaker_voices` given: a per-gender cursor cycles through
+      the gender-matching subset of `speaker_voices` (via `preset_genders`,
+      default `PRESET_GENDERS`) — e.g. three male speakers each get a
+      different male preset in turn, rather than all collapsing onto the
+      first match. If `speaker_voices` has no entry of that gender, falls
+      back to the voice bank's male/female pick (`native_voices_for`).
+    - Unknown gender: round-robins over all of `speaker_voices`, in order of
+      first appearance (old behaviour — falls back to `default_voice` — when
       `speaker_voices` is None/empty).
+    - Voices already claimed by `voice_map` or `seed_voice` are excluded from
+      the round-robin/gender pools whenever that still leaves an option (a
+      fully-claimed pool falls back to reusing entries rather than erroring).
     """
     voice_map = voice_map or {}
     genders = genders or {}
     pg = PRESET_GENDERS if preset_genders is None else preset_genders
+
+    claimed = set(voice_map.values())
+    if seed_voice:
+        claimed.add(seed_voice)
+
+    def _pool(entries: list[str]) -> list[str]:
+        filtered = [v for v in entries if v not in claimed]
+        return filtered if filtered else list(entries)
+
+    full_pool = list(speaker_voices or [])
+    male_pool = _pool([v for v in full_pool if pg.get(v) == "male"])
+    female_pool = _pool([v for v in full_pool if pg.get(v) == "female"])
+    rr_pool = _pool(full_pool)
+
     bank_defaults: list[str] | None = None  # lazy — only touch the (often-empty) bank catalog if actually needed
+    male_i = female_i = rr_i = 0
+    seed_assigned = False
 
     out: dict[str, str] = {}
-    rr = 0
     for spk in speakers:
-        gender = genders.get(spk)
         if spk in voice_map:
             out[spk] = voice_map[spk]
-        elif gender in ("male", "female"):
-            match = next((v for v in (speaker_voices or []) if pg.get(v) == gender), None)
-            if match is not None:
-                out[spk] = match
+            continue
+        if seed_voice and not seed_assigned:
+            out[spk] = seed_voice
+            seed_assigned = True
+            continue
+        gender = genders.get(spk)
+        if gender in ("male", "female"):
+            pool = male_pool if gender == "male" else female_pool
+            if pool:
+                idx = male_i if gender == "male" else female_i
+                out[spk] = pool[idx % len(pool)]
+                if gender == "male":
+                    male_i += 1
+                else:
+                    female_i += 1
             else:
                 if bank_defaults is None:
                     bank_defaults = native_voices_for("vi", bank=bank)
                 male, female = bank_defaults
                 out[spk] = female if gender == "female" else male
-        elif speaker_voices:
-            out[spk] = speaker_voices[rr % len(speaker_voices)]
-            rr += 1
+        elif rr_pool:
+            out[spk] = rr_pool[rr_i % len(rr_pool)]
+            rr_i += 1
         else:
             out[spk] = default_voice
     return out

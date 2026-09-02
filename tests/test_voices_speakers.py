@@ -1,8 +1,13 @@
+from pathlib import Path
+
 import numpy as np
 import soundfile as sf
+import yaml
 
 from pipeline import voices
 from pipeline.transcriber import Segment
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_assign_voices_round_robins_speaker_voices_by_first_appearance():
@@ -55,6 +60,70 @@ def test_assign_voices_uses_custom_preset_genders_map():
         preset_genders={"OnlyVoice": "female"},
     )
     assert out == {"A": "OnlyVoice"}
+
+
+def test_assign_voices_cycles_through_gender_pool_instead_of_collapsing():
+    # Three male speakers must NOT all land on the first male match — each
+    # should get a different preset from the male subset, in order.
+    out = voices.assign_voices(
+        ["A", "B", "C"],
+        default_voice="fallback",
+        genders={"A": "male", "B": "male", "C": "male"},
+        speaker_voices=["Thanh Bình", "Ngọc Huyền", "Minh Đức", "Trúc Ly", "Thái Sơn", "Mai Anh"],
+    )
+    assert out == {"A": "Thanh Bình", "B": "Minh Đức", "C": "Thái Sơn"}
+
+
+def test_assign_voices_gender_cursor_wraps_around():
+    out = voices.assign_voices(
+        ["A", "B", "C", "D"],
+        default_voice="fallback",
+        genders={"A": "female", "B": "female", "C": "female", "D": "female"},
+        speaker_voices=["Thanh Bình", "Ngọc Huyền", "Minh Đức", "Trúc Ly", "Thái Sơn", "Mai Anh"],
+    )
+    assert out == {"A": "Ngọc Huyền", "B": "Trúc Ly", "C": "Mai Anh", "D": "Ngọc Huyền"}
+
+
+def test_assign_voices_seed_voice_goes_to_first_speaker_not_in_voice_map():
+    out = voices.assign_voices(
+        ["A", "B", "C"],
+        default_voice="fallback",
+        genders={"B": "male", "C": "female"},
+        speaker_voices=["Thanh Bình", "Ngọc Huyền", "Minh Đức", "Trúc Ly", "Thái Sơn", "Mai Anh"],
+        seed_voice="Custom Seed",
+    )
+    assert out["A"] == "Custom Seed"
+    assert out["B"] == "Thanh Bình"
+    assert out["C"] == "Ngọc Huyền"
+
+
+def test_assign_voices_seed_voice_excluded_from_gender_cursor_when_possible():
+    out = voices.assign_voices(
+        ["A", "B"],
+        default_voice="fallback",
+        genders={"B": "male"},
+        speaker_voices=["Thanh Bình", "Minh Đức", "Thái Sơn"],
+        seed_voice="Thanh Bình",
+    )
+    assert out["A"] == "Thanh Bình"
+    assert out["B"] == "Minh Đức"  # cursor skips the seed voice since another option exists
+
+
+def test_assign_voices_seed_voice_yields_to_explicit_voice_map_speaker():
+    out = voices.assign_voices(
+        ["A", "B"],
+        default_voice="fallback",
+        voice_map={"A": "Mapped Voice"},
+        speaker_voices=["Thanh Bình", "Ngọc Huyền"],
+        seed_voice="Custom Seed",
+    )
+    assert out["A"] == "Mapped Voice"
+    assert out["B"] == "Custom Seed"  # first speaker NOT covered by voice_map
+
+
+def test_preset_genders_matches_config_default():
+    cfg = yaml.safe_load((_REPO_ROOT / "config" / "default.yaml").read_text(encoding="utf-8"))
+    assert voices.PRESET_GENDERS == cfg["voices"]["preset_genders"]
 
 
 def _sawtooth(freq: float, duration_s: float, sr: int, amp: float = 0.3) -> np.ndarray:

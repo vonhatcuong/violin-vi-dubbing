@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from pipeline import config as pipeline_config
 from pipeline.captions import fetch_source_captions
 from pipeline.downloader import download_url_to_file, is_url
-from pipeline.orchestrator import DubOptions, dub_video
+from pipeline.orchestrator import DubOptions, dub_video, valid_speakers_value
 from pipeline.styles import list_styles, resolve as resolve_style
 
 load_dotenv(override=True)
@@ -50,14 +50,18 @@ def _print_styles() -> None:
 
 
 def _speakers_type(value: str) -> str:
-    """argparse `type=` validator for `--speakers`: "auto" or a positive integer string."""
-    if value == "auto" or (value.isdigit() and int(value) >= 1):
-        return value
-    raise argparse.ArgumentTypeError(f'--speakers must be "auto" or a positive integer, got {value!r}')
+    """argparse `type=` validator for `--speakers`: "auto" or a positive integer string (no leading zero)."""
+    if not valid_speakers_value(value):
+        raise argparse.ArgumentTypeError(f'--speakers must be "auto" or a positive integer, got {value!r}')
+    return value
 
 
 def _parse_voice_map(value: str | None) -> dict[str, str] | None:
-    """Parse `"SPEAKER_00=Phạm Tuyên,SPEAKER_01=Ngọc Huyền"` into a dict, or None if empty."""
+    """argparse `type=` for `--voice-map`: parse `"SPEAKER_00=Phạm Tuyên,SPEAKER_01=Ngọc Huyền"` into a dict.
+
+    Returns None for an empty/unset value. Raises `argparse.ArgumentTypeError`
+    on a malformed entry (no "=", or an empty speaker/voice name).
+    """
     if not value:
         return None
     out: dict[str, str] = {}
@@ -65,8 +69,13 @@ def _parse_voice_map(value: str | None) -> dict[str, str] | None:
         pair = pair.strip()
         if not pair:
             continue
+        if "=" not in pair:
+            raise argparse.ArgumentTypeError(f'--voice-map entry {pair!r} must be "SPEAKER=Voice Name"')
         speaker, _, name = pair.partition("=")
-        out[speaker.strip()] = name.strip()
+        speaker, name = speaker.strip(), name.strip()
+        if not speaker or not name:
+            raise argparse.ArgumentTypeError(f'--voice-map entry {pair!r} must be "SPEAKER=Voice Name"')
+        out[speaker] = name
     return out or None
 
 
@@ -253,7 +262,7 @@ def main() -> None:
              'or a fixed count like "3"'
     )
     parser.add_argument(
-        "--voice-map", default=None,
+        "--voice-map", type=_parse_voice_map, default=None,
         help='Per-speaker voice overrides, e.g. "SPEAKER_00=Phạm Tuyên,SPEAKER_01=Ngọc Huyền"'
     )
 
@@ -317,7 +326,7 @@ def main() -> None:
         fit=False if args.no_fit else None,
         subtitle_lang=args.subtitle_lang,
         speakers=args.speakers,
-        voice_map=_parse_voice_map(args.voice_map),
+        voice_map=args.voice_map,
     )
 
 

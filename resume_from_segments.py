@@ -84,6 +84,22 @@ def load_segments(path: str) -> tuple[list[Segment], str]:
     return segments, stage
 
 
+def _voices_json_path(segments_path: str, stage: str) -> Path | None:
+    """The `<stem>.voices.json` sibling of a `<stem>.<stage>.segments.json` file, if any.
+
+    Mirrors how ``pipeline.orchestrator._persist_segments``/the diarization step
+    name their artifacts — strips the exact `.{stage}.segments.json` suffix
+    written for this checkpoint and reattaches `.voices.json`. Returns None
+    when *segments_path* doesn't have that expected suffix.
+    """
+    p = Path(segments_path)
+    suffix = f".{stage}.segments.json"
+    if not p.name.endswith(suffix):
+        return None
+    stem = p.name[: -len(suffix)]
+    return p.with_name(f"{stem}.voices.json")
+
+
 def _check_fit_stage(cfg: dict, stage: str) -> str | None:
     """Return an error message when resuming would bypass the duration fitter.
 
@@ -145,6 +161,12 @@ def main() -> int:
     if not segments:
         print("[resume] No segments — abort.", file=sys.stderr)
         return 1
+
+    voice_map: dict[str, str] | None = None
+    voices_json_path = _voices_json_path(args.segments, stage)
+    if voices_json_path is not None and voices_json_path.is_file():
+        voice_map = json.loads(voices_json_path.read_text(encoding="utf-8"))
+        print(f"[resume] voice_map loaded ← {voices_json_path} ({len(voice_map)} speakers)")
 
     fit_error = _check_fit_stage(cfg, stage)
     if fit_error:
@@ -251,6 +273,7 @@ def main() -> int:
             tts_paths = synthesize_segments(
                 translated, voice, str(tts_dir),
                 language=lang,
+                voice_map=voice_map,
                 tracker=tracker,
                 speed=style.tts_speed,
                 emotion=style.tts_emotion,

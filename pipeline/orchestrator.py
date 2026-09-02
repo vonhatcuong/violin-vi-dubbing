@@ -41,6 +41,17 @@ class Cancelled(Exception):
     """Raised inside ``dub_video`` when ``is_cancelled()`` returns True."""
 
 
+def valid_speakers_value(value: str) -> bool:
+    """True for "auto", or a positive integer string with no leading zero (e.g. "3", not "03").
+
+    Shared by ``DubOptions.__post_init__`` and ``main.py``'s ``--speakers`` argparse
+    validator so the two can't drift.
+    """
+    if value == "auto":
+        return True
+    return value.isascii() and value.isdigit() and value == str(int(value)) and int(value) >= 1
+
+
 @dataclass
 class DubOptions:
     target_language: str
@@ -64,9 +75,10 @@ class DubOptions:
     elevenlabs_api_key: str | None = None
 
     def __post_init__(self) -> None:
-        if self.speakers != "auto" and not (self.speakers.isdigit() and int(self.speakers) >= 1):
+        if not valid_speakers_value(self.speakers):
             raise ValueError(
-                f'DubOptions.speakers must be "auto" or a positive integer string, got {self.speakers!r}'
+                f'DubOptions.speakers must be "auto" or a positive integer string (no leading zero), '
+                f'got {self.speakers!r}'
             )
 
 
@@ -146,6 +158,7 @@ def dub_video(
         # segments, so mislabeling here would let it join two different speakers.
         vcfg = cfg.get("voices", {})
         dcfg = cfg.get("diarization", {})
+        tts_provider = cfg.get("models", {}).get("tts", {}).get("provider")
         voice_map: dict[str, str] = {}
         if opts.speakers != "1" or bool(dcfg.get("enabled", False)):
             _check_cancel(is_cancelled)
@@ -153,10 +166,18 @@ def dub_video(
                 audio_path = extract_audio(input_path, str(tmp_dir / "audio.wav"))
             _emit(on_progress, 2, "Diarizing speakers…")
             hf_token_env = dcfg.get("hf_token_env")
+            if opts.speakers == "auto":
+                num_speakers = None
+            elif opts.speakers == "1":
+                # Only reachable via diarization.enabled with no explicit --speakers —
+                # never force a single cluster; fall back to config or full auto-detect.
+                num_speakers = dcfg.get("num_speakers") or None
+            else:
+                num_speakers = int(opts.speakers)
             labels = diarizer.label_segments(
                 audio_path, segments,
                 backend=dcfg.get("backend", "ecapa"),
-                num_speakers=None if opts.speakers == "auto" else int(opts.speakers),
+                num_speakers=num_speakers,
                 max_speakers=int(dcfg.get("max_speakers", 4)),
                 threshold=float(dcfg.get("threshold", 0.65)),
                 hf_token=os.environ.get(hf_token_env) if hf_token_env else None,
@@ -168,15 +189,24 @@ def dub_video(
             _persist_segments(segments, output_video_path, "diarized")
             tracker.record_step("Diarization")
 
-            genders: dict[str, str] = {}
-            if vcfg.get("gender_detect", False):
-                genders = guess_genders(audio_path, segments)
-
+            # speaker_voices/preset_genders/genders only make sense for VieNeu preset
+            # names — other providers (e.g. Cartesia/Together) would get sent a VieNeu
+            # preset name as a literal voice id, so every speaker just gets
+            # effective_voice there unless --voice-map names them explicitly.
             speakers_order = list(dict.fromkeys(s.speaker for s in segments))
-            voice_map = assign_voices(
-                speakers_order, effective_voice, opts.voice_map, genders,
-                speaker_voices=vcfg.get("speaker_voices"), preset_genders=vcfg.get("preset_genders"),
-            )
+            if tts_provider == "vieneu":
+                genders: dict[str, str] = {}
+                if vcfg.get("gender_detect", False):
+                    genders = guess_genders(audio_path, segments)
+                voice_map = assign_voices(
+                    speakers_order, effective_voice, opts.voice_map, genders,
+                    speaker_voices=vcfg.get("speaker_voices"), preset_genders=vcfg.get("preset_genders"),
+                    seed_voice=opts.voice,
+                )
+            else:
+                voice_map = assign_voices(
+                    speakers_order, effective_voice, opts.voice_map, seed_voice=opts.voice,
+                )
             voices_json_path = Path(output_video_path).with_suffix(".voices.json")
             voices_json_path.write_text(json.dumps(voice_map, ensure_ascii=False, indent=2), encoding="utf-8")
 
