@@ -107,10 +107,38 @@ def _deduplicate_fragment(prev_text: str, frag_text: str) -> str:
     return frag_text
 
 
+def _absorb_short_segments(segments: list["Segment"], min_duration: float, max_gap: float) -> list["Segment"]:
+    """Merge segments shorter than *min_duration* into a same-speaker neighbour.
+
+    Sub-2.5 s units make TTS choppy and give the duration fitter no room to
+    work; a short unit is glued to the previous segment when the gap allows,
+    otherwise the following one absorbs it.
+    """
+    if min_duration <= 0 or len(segments) < 2:
+        return segments
+
+    def _join(a: "Segment", b: "Segment") -> "Segment":
+        return Segment(id=a.id, start=a.start, end=b.end, text=(a.text + " " + b.text).strip(),
+                       speaker=a.speaker, source_text=(a.source_text + " " + b.source_text).strip())
+
+    out: list[Segment] = [segments[0]]
+    for seg in segments[1:]:
+        prev = out[-1]
+        close = seg.speaker == prev.speaker and (seg.start - prev.end) <= max_gap
+        short_cur = (seg.end - seg.start) < min_duration
+        short_prev = (prev.end - prev.start) < min_duration
+        if close and (short_cur or short_prev):
+            out[-1] = _join(prev, seg)
+        else:
+            out.append(seg)
+    return out
+
+
 def merge_continuous_segments(
     segments: list["Segment"],
     max_gap: float | None = None,
     max_duration: float | None = None,
+    min_duration: float | None = None,
 ) -> list["Segment"]:
     """Merge consecutive same-speaker segments that don't end at sentence boundaries.
 
@@ -122,6 +150,8 @@ def merge_continuous_segments(
         max_gap = cfg["max_gap"]
     if max_duration is None:
         max_duration = cfg["max_duration"]
+    if min_duration is None:
+        min_duration = float(cfg.get("min_duration", 0.0) or 0.0)
 
     if not segments:
         return []
@@ -151,6 +181,8 @@ def merge_continuous_segments(
             current = seg
 
     merged.append(current)
+
+    merged = _absorb_short_segments(merged, min_duration, max_gap)
 
     for i, seg in enumerate(merged):
         seg.id = i
