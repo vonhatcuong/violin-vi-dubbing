@@ -1,0 +1,65 @@
+# NVIDIA GPU preset — FULLY LOCAL. Same stages as local_mac.yaml on CUDA.
+# Tested on Vast.ai 2× RTX 3090: Ollama on one GPU, ASR/TTS on the other.
+#   CUDA_VISIBLE_DEVICES=1 OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_FLASH_ATTENTION=1 ollama serve
+#     (without OLLAMA_CONTEXT_LENGTH Ollama defaults gemma4:31b to a 262k context and spills half the model to CPU → 3 tok/s)
+#   uv sync --extra local-gpu
+#   uv pip install "torch==2.8.0" "torchaudio==2.8.0" --index-url https://download.pytorch.org/whl/cu128   # VieNeu GPU engine
+#   ollama pull gemma4:31b            # Q4, ~19 GB — fits a 24 GB card
+#   uv run main.py video.mp4 video_vi.mp4 --language Vietnamese --config config/local_gpu.yaml
+
+models:
+  transcription:
+    provider: faster-whisper
+    model: large-v3
+  translation:
+    provider: ollama                    # or: openai_compat + base_url: http://localhost:8000/v1 (vLLM)
+    model: gemma4:31b
+    base_url: http://localhost:11434/v1
+  tts:
+    provider: vieneu
+    model: vieneu-v3-turbo
+  chat:
+    provider: ollama
+    model: gemma4:31b
+    base_url: http://localhost:11434/v1
+
+transcription:
+  chunk_seconds: 600
+  parallel_workers: 1
+  local_device: cuda
+  local_compute_type: float16
+
+translation:
+  batch_size: 32
+  response_format: json_object
+
+merge:
+  max_subtitle_chars: 0
+  min_duration: 2.5
+
+fit:
+  enabled: true
+  sec_per_syllable: 0.23
+
+vieneu:
+  backend: auto                         # → PyTorch batched engine on CUDA
+  device: cuda
+  max_batch_size: 32
+
+voices:
+  default_male: "Phạm Tuyên"
+  default_female: "Ngọc Huyền"
+
+tts:
+  workers: 1
+  tail_silence_ms: 120
+  sentence_tail_silence_ms: 250
+
+merge_video:
+  workers: 16
+  speed_clamp_min: 0.92
+  speed_clamp_max: 1.0
+  max_audio_speedup: 1.4
+  max_freeze_s: 0.0
+  hard_trim: true
+  voiceover_volume: 0.02

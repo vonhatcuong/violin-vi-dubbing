@@ -1,10 +1,11 @@
 """Resume Violin pipeline from a persisted segments JSON.
 
-The orchestrator writes ``<output>.transcribed.segments.json`` after Step 2
-and ``<output>.translated.segments.json`` after Step 3. If the pipeline
-crashes during Translate / TTS / Merge, this script picks up from the
-latest checkpoint and finishes the run — saving the (often 30-60 min)
-transcription work.
+The orchestrator writes ``<output>.transcribed.segments.json`` after Step 2,
+``<output>.translated.segments.json`` after Step 3, and — on the fitter path
+(``fit.enabled``) — ``<output>.fitted.segments.json`` after fit_text/fit_audio.
+If the pipeline crashes during Translate / TTS / Merge, this script picks up
+from the latest checkpoint and finishes the run — saving the (often 30-60
+min) transcription work.
 
 Usage examples:
 
@@ -21,6 +22,15 @@ Usage examples:
     uv run resume_from_segments.py \\
         --input  source.mp4 \\
         --segments output.translated.segments.json \\
+        --output  output_vi.mp4 \\
+        --language Vietnamese \\
+        --style    academic \\
+        --config   config/local_mac.yaml
+
+    # Resume from fitted segments (fit.enabled run; only TTS + merge, no re-split)
+    uv run resume_from_segments.py \\
+        --input  source.mp4 \\
+        --segments output.fitted.segments.json \\
         --output  output_vi.mp4 \\
         --language Vietnamese \\
         --style    academic \\
@@ -52,7 +62,9 @@ from pipeline.tts import native_voices_for, synthesize_segments
 def load_segments(path: str) -> tuple[list[Segment], str]:
     """Load segments from the JSON written by orchestrator._persist_segments.
 
-    Returns (segments, stage) where stage is "transcribed" or "translated".
+    Returns (segments, stage) where stage is "transcribed", "translated", or
+    "fitted" (translated + fitted: sentence units, ``end`` already extended
+    to borrow the following pause — no re-merge/re-split needed).
     """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     stage = data.get("stage", "transcribed")
@@ -171,6 +183,13 @@ def main() -> int:
             # Same post-translate transformation as orchestrator.
             translated = merge_continuous_segments(translated, max_duration=float("inf"))
             translated = split_into_sentences(translated)
+        elif stage == "fitted":
+            # Already translated AND fitted — units are already sentence-level
+            # with `end` extended to borrow the following pause; skip the
+            # re-merge/re-split (would re-flatten the borrowed pauses).
+            print(f"[resume] [Translate] skipping (stage=fitted, {len(segments)} segments)")
+            translated = segments
+            tracker.record_step("Translation (cached)")
         else:
             # Already translated — apply the same merge+split as orchestrator does
             # post-translate, since persisted JSON has pre-split text.

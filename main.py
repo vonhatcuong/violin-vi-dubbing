@@ -79,6 +79,7 @@ def translate_video(
     burn_subtitles: bool = False,
     timings_out: str | None = None,
     prefer_source_captions: bool = True,
+    fit: bool | None = None,
 ) -> None:
     if style is None:
         style = resolve_style("standard")
@@ -100,6 +101,7 @@ def translate_video(
         subtitles=subtitles,
         subtitle_formats=subtitle_formats,
         burn_subtitles=burn_subtitles,
+        fit=fit,
     )
 
     tmp_download_dir = None
@@ -209,6 +211,10 @@ def main() -> None:
         "--install-skill", action="store_true",
         help="Copy the Violin Claude Code skill to ~/.claude/skills/ and exit"
     )
+    parser.add_argument(
+        "--no-fit", action="store_true",
+        help="Disable the duration fitter even if the config enables it (local dubbing)",
+    )
 
     args = parser.parse_args()
 
@@ -267,6 +273,7 @@ def main() -> None:
         burn_subtitles=args.burn_subtitles,
         timings_out=args.timings_out,
         prefer_source_captions=prefer_source_captions,
+        fit=False if args.no_fit else None,
     )
 
 
