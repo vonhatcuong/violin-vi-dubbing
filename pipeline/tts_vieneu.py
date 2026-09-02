@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +101,7 @@ def voice_descriptions() -> dict[str, str]:
 
 def _resolve_voice(engine: Any, voice: str) -> str:
     """Return the name to pass to `engine.infer(voice=...)`, enrolling bank clips once."""
+    voice = unicodedata.normalize("NFC", voice)
     presets = _preset_names(engine)
     if voice in presets:
         return voice
@@ -127,7 +129,8 @@ def _write_44k_mono(wav: np.ndarray, sr: int, output_path: str) -> None:
 
 
 def _prepare_text(text: str, language: str, cfg: dict[str, Any]) -> str:
-    if not language.lower().startswith("vi") or not cfg.get("normalize_numbers", True):
+    text = unicodedata.normalize("NFC", text or "")
+    if not language.lower().startswith("vi") or not cfg.get("normalize_numbers", False):
         return text
     return normalize_for_tts(text, use_vinorm=False, loanwords=cfg.get("loanwords") or {}, lowercase=False)
 

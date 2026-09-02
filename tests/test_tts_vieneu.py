@@ -1,3 +1,4 @@
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -96,3 +97,21 @@ def test_make_synthesizer_uses_vieneu_backend(env, tmp_path, monkeypatch):
     synth = tts.make_synthesizer(language="vi")
     out = synth("Xin chào", "Phạm Tuyên", str(tmp_path / "s.wav"), 1.0)
     assert Path(out).exists() and len(engine.calls) == 1
+
+
+def test_nfc_normalization_always_applied_even_when_normalize_numbers_is_off(env, tmp_path, monkeypatch):
+    cfg = pipeline_config.get()
+    monkeypatch.setitem(cfg["vieneu"], "normalize_numbers", False)
+    engine = FakeEngine()
+    decomposed = "Cha" + "̀" + "o bạn"  # NFD "Chào bạn"
+    tts_vieneu.synthesize_segment(decomposed, "Phạm Tuyên", str(tmp_path / "o.wav"), engine, language="vi")
+    assert engine.calls[0]["text"] == "Chào bạn"
+    tts_vieneu.synthesize_segment("Có 23 GPU", "Phạm Tuyên", str(tmp_path / "p.wav"), engine, language="vi")
+    assert engine.calls[1]["text"] == "Có 23 GPU"
+
+
+def test_voice_name_given_as_nfd_resolves_to_preset(env, tmp_path):
+    engine = FakeEngine()
+    decomposed_voice = unicodedata.normalize("NFD", "Phạm Tuyên")
+    tts_vieneu.synthesize_segment("x", decomposed_voice, str(tmp_path / "o.wav"), engine, language="vi")
+    assert engine.calls[0]["voice"] == "Phạm Tuyên"
