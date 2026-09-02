@@ -255,7 +255,7 @@ rsync -a --partial -e "ssh -p <port>" root@<ip>:/workspace/out_<tên>/<tên>_vi_
 ```
 
 Chạy hàng loạt (playlist): script mẫu chạy tuần tự, bỏ qua bài đã có `DONE`, tải từng video bằng yt-dlp và ghi
-`batch.log` — xem `/workspace/batch_18_06.sh` trên server tham chiếu (khung: vòng `for id in $IDS`, `yt-dlp` →
+`batch.log` — bản sao trong repo: `scripts/ops/batch_playlist_example.sh` (server) và `scripts/ops/sync_loop_example.sh` (máy cá nhân) (khung: vòng `for id in $IDS`, `yt-dlp` →
 `main.py` → `touch DONE`). Kết hợp với một vòng lặp rsync trên máy cá nhân chỉ kéo thư mục có `DONE`.
 
 ## 7. Chuyển sang server mới: sao lưu gì, tải lại gì
