@@ -2888,3 +2888,82 @@ Expected: toàn bộ pass (5 test mới).
 git add pipeline/translator.py config/default.yaml tests/test_translator_reasoning.py
 git commit -m "feat(translator): disable hidden reasoning on Ollama via reasoning_effort"
 ```
+
+---
+
+### Task 14: Lấp đầy ngân sách âm tiết, unit ngắn hơn, giữ Ollama ấm — từ kết quả E2E #1
+
+**Bối cảnh (E2E #1 trên RTX 3090, MIT 6.0001 L1 3 phút):** pipeline chạy xong, video 180 s khớp gốc, 18 unit không unit nào tràn. Nhưng: (a) tổng TTS 103 s trên ngân sách 172 s (chỉ 60 %) vì khối "MUST be SHORTER … ~0.85× word count" trong `batch_user` lấn át ngân sách âm tiết (VieNeu nói ~4,4 âm tiết/giây nên tiếng Việt cần ~1,5 âm tiết cho mỗi từ tiếng Anh mới lấp đầy slot); (b) unit dài 10–17 s vì bài giảng nói liền mạch, ít dấu chấm → đồng bộ thô; (c) bước dịch mất 111 s vì Ollama unload model sau 5 phút idle rồi nạp lại lạnh.
+
+**Files:**
+- Modify: `prompts/translate.yaml` (`batch_user`, `batch_user_styled`: khối rút gọn trở thành `{length_block}`; thêm `length_block_free`, sửa `budget_block`)
+- Modify: `pipeline/translator.py` (`_try_batch`: chọn `length_block`)
+- Modify: `config/local_mac.yaml`, `config/local_gpu.yaml` (`merge.max_duration: 15`, ghi chú `OLLAMA_KEEP_ALIVE`)
+- Modify: `README.md` (thêm `OLLAMA_KEEP_ALIVE=30m` vào phần Ollama)
+- Test: `tests/test_translator_budget.py` (+2 test)
+
+**Interfaces:** không đổi chữ ký; chỉ nội dung prompt và config.
+
+- [ ] **Step 1: Viết test thất bại** (thêm vào `tests/test_translator_budget.py`)
+
+```python
+def test_budget_prompt_replaces_shorter_rule():
+    client = FakeClient(json.dumps({"translations": ["xin chào"]}))
+    translator._try_batch(["hello everyone"], "Vietnamese", "English", client, budgets=[(3.2, 15)])
+    user_msg = client.calls[0]["messages"][1]["content"]
+    assert "MUST be SHORTER" not in user_msg
+    assert "80–95%" in user_msg or "80-95%" in user_msg
+
+
+def test_no_budget_prompt_keeps_shorter_rule():
+    client = FakeClient(json.dumps({"translations": ["xin chào"]}))
+    translator._try_batch(["hello"], "Vietnamese", "English", client)
+    user_msg = client.calls[0]["messages"][1]["content"]
+    assert "MUST be SHORTER" in user_msg
+```
+
+- [ ] **Step 2: Chạy test, xác nhận thất bại**
+
+Run: `uv run python -m pytest tests/test_translator_budget.py -v`
+Expected: `test_budget_prompt_replaces_shorter_rule` FAIL (prompt vẫn chứa "MUST be SHORTER").
+
+- [ ] **Step 3: Sửa prompt và translator**
+
+Trong `prompts/translate.yaml`, ở `batch_user` thay toàn bộ khối từ `CRITICAL — keep translations SHORT…` đến `{budget_block}` bằng một dòng `{length_block}`; làm tương tự trong `batch_user_styled` (khối `CRITICAL — short spoken duration:` … `{budget_block}` → `{length_block}`). Thêm:
+
+```yaml
+## Length control — chosen per batch by the translator
+
+length_block_free: |
+  CRITICAL — keep translations SHORT so they fit the original speaking time:
+  - The {target_language} version MUST be SHORTER than the source — not equal, SHORTER.
+  - Vietnamese inflates vs. English; counteract aggressively. Paraphrase, don't transliterate:
+    · Drop filler ("very", "really", "actually", "basically", "well", "you know", "I mean").
+    · Drop redundant clauses ("which is to say", "in other words").
+    · Use shortest natural phrasing — single-word verbs, pronouns over re-naming.
+    · Collapse "in order to" → "để"; "the way in which we can" → "cách"; "be able to" → "có thể".
+  - Target ~0.85× the word count of the source. It is better to lose minor nuance than to overrun.
+
+budget_block: |
+  SYLLABLE BUDGET (hard constraint): each segment is annotated "(X.Xs, ≤N syllables)" — the seconds of
+  speech available and the maximum number of Vietnamese syllables that fit at natural speed.
+  Vietnamese words are monosyllabic, so count words.
+  - Use 80–95% of N: translate the FULL meaning; drop only filler and redundancy. Do not compress
+    below 80% of N — an under-filled slot leaves silence while the speaker is still talking.
+  - Never exceed N.
+```
+
+Trong `pipeline/translator.py::_try_batch`, khi dựng `fmt`: `length_block = _prompts.load("translate", "budget_block") if budgets else _prompts.load("translate", "length_block_free")` và truyền `length_block=length_block` (bỏ `budget_block=` cũ; xoá key `budget_block` trong `fmt`).
+
+- [ ] **Step 4: Preset + README**
+
+`config/local_mac.yaml` và `config/local_gpu.yaml`: trong khối `merge:` thêm `max_duration: 15                      # sentence-sized units: run-on lecture speech otherwise yields 15–20 s units and coarse sync`. Trong header comment của `local_gpu.yaml` thêm `OLLAMA_KEEP_ALIVE=30m` vào lệnh `ollama serve` (kèm chú thích: tránh nạp lạnh 19 GB giữa các stage); README: thêm cùng lưu ý vào phần Ollama.
+
+- [ ] **Step 5: Chạy test, commit**
+
+Run: `uv run python -m pytest -q` → toàn bộ pass (+2).
+
+```bash
+git add prompts/translate.yaml pipeline/translator.py config/local_mac.yaml config/local_gpu.yaml README.md tests/test_translator_budget.py
+git commit -m "feat(translator): fill the syllable budget instead of the 0.85x rule; sentence-sized units; keep Ollama warm"
+```
