@@ -1,37 +1,30 @@
 #!/bin/bash
-# Example Mac-side puller used with the GPU server (see docs/ops/gpu-server-runbook.md §6). Edit BASE/H/port before reuse.
-# Pull finished dubbing outputs from the GPU server every 10 min for up to 14 h. 720p only for HD sources; MIT (<=360p) as is.
+# Example Mac-side puller (see docs/ops/gpu-server-runbook.md §6). Pairs with scripts/ops/encode720_daemon_example.sh on the server. Edit BASE/H/port before reuse.
 BASE="/Users/riley/Nhat Cuong/code/00-personal/violin/output/e2e_server"
-SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -p 41620"
+SSH="ssh -o BatchMode=yes -o ConnectTimeout=20 -o ConnectionAttempts=2 -p 41620"
 H=root@83.10.114.74
-END=$(( $(date +%s) + 14*3600 ))
+END=$(( $(date +%s) + 20*3600 ))
 while [ $(date +%s) -lt $END ]; do
-  for pair in "out13:envs_run13:envs_vi:envs" "out14:video3_run14:video3_vi:video3"; do
-    IFS=: read -r remote local stem log <<< "$pair"
-    [ -f "$BASE/$local/.synced" ] && continue
-    if $SSH $H "grep -q 'Done!' /workspace/$remote/$log.log 2>/dev/null"; then
-      # make the 720p on the server if missing (NVENC), then pull only that
-      # skip while an encoder is still writing the 720p; encode only if the file is absent; verify it is a complete mp4 before pulling
-      $SSH $H "pgrep -f \"ffmpeg.*${stem}_720[p]\" >/dev/null" && continue
-      $SSH $H "cd /workspace/$remote && ([ -f ${stem}_720p.mp4 ] || ffmpeg -hide_banner -loglevel error -y -hwaccel cuda -i ${stem}.mp4 -vf scale=-2:720 -c:v h264_nvenc -preset p4 -cq 30 -c:a aac -b:a 96k ${stem}_720p.mp4) && ffprobe -v error -show_entries format=duration -of csv=p=0 ${stem}_720p.mp4 | grep -qE '^[0-9]'" || continue
-      mkdir -p "$BASE/$local"
-      rsync -a --partial -e "$SSH" $H:/workspace/$remote/${stem}_720p.mp4 :/workspace/$remote/${stem}.srt :/workspace/$remote/${stem}.voices.json :/workspace/$remote/${stem}.fit.units.json :/workspace/$remote/${stem}.transcript.txt :/workspace/$remote/$log.log "$BASE/$local/" && [ -s "$BASE/$local/${stem}_720p.mp4" ] && touch "$BASE/$local/.synced" && echo "$(date +%FT%T) synced $local"
+  ready=$($SSH $H 'ls /workspace/out_18_06/*/*_720p.mp4.ok /workspace/out_cs336/*/*_720p.mp4.ok /workspace/out12/*_720p.mp4.ok /workspace/out13/*_720p.mp4.ok /workspace/out14/*_720p.mp4.ok 2>/dev/null' 2>/dev/null)
+  if [ -z "$ready" ]; then sleep 120; continue; fi
+  for okf in $ready; do
+    f720=${okf%.ok}; rdir=$(dirname "$f720"); fname=$(basename "$f720"); stem=${fname%_720p.mp4}
+    case "$rdir" in
+      /workspace/out_18_06/*) tag=$(basename "$rdir"); ldir="$BASE/mit_18_06/$tag"; extra="$rdir/${stem}.srt $rdir/${stem}.fit.units.json $rdir/${stem}.transcript.txt $rdir/run.log" ;;
+      /workspace/out_cs336/*)  tag=$(basename "$rdir"); ldir="$BASE/cs336/$tag";     extra="$rdir/${stem}.srt $rdir/${stem}.fit.units.json $rdir/${stem}.transcript.txt $rdir/run.log" ;;
+      /workspace/out12) ldir="$BASE/docs_llm_run12"; extra="$rdir/${stem}.srt $rdir/${stem}.voices.json $rdir/${stem}.fit.units.json $rdir/${stem}.transcript.txt" ;;
+      /workspace/out13) ldir="$BASE/envs_run13";     extra="$rdir/${stem}.srt $rdir/${stem}.voices.json $rdir/${stem}.fit.units.json $rdir/${stem}.transcript.txt" ;;
+      /workspace/out14) ldir="$BASE/video3_run14";   extra="$rdir/${stem}.srt $rdir/${stem}.voices.json $rdir/${stem}.fit.units.json $rdir/${stem}.transcript.txt" ;;
+      *) continue ;;
+    esac
+    [ -f "$ldir/.synced" ] && continue
+    mkdir -p "$ldir"
+    srcs="$H:$f720"; for e in $extra; do srcs="$srcs :$e"; done
+    if rsync -a --partial -e "$SSH" $srcs "$ldir/" 2>>"$BASE/.sync_errors.log" && [ -s "$ldir/$fname" ]; then
+      touch "$ldir/.synced"; echo "$(date +%FT%T) synced $(basename "$ldir")"
+    else
+      echo "$(date +%FT%T) retry-later $(basename "$ldir")"; sleep 30
     fi
   done
-  for rp in "out_18_06:mit_18_06" "out_cs336:cs336"; do
-    root=${rp%%:*}; lroot=${rp#*:}
-    for tag in $($SSH $H "cd /workspace/$root 2>/dev/null && ls -d */DONE 2>/dev/null | cut -d/ -f1"); do
-      [ -f "$BASE/$lroot/$tag/.synced" ] && continue
-      id=${tag#*_}
-      # compact copy on the server first (NVENC, native resolution capped at 720p, ~300-500 kbps) — the merger's own encode is ~1.6 Mbps
-      $SSH $H "pgrep -f \"ffmpeg.*${id}_vi_720[p]\" >/dev/null" && continue
-      $SSH $H "cd /workspace/$root/$tag && ([ -f ${id}_vi_720p.mp4 ] || ffmpeg -hide_banner -loglevel error -y -hwaccel cuda -i ${id}_vi.mp4 -vf \"scale=-2:'min(720,ih)'\" -c:v h264_nvenc -preset p4 -cq 32 -c:a aac -b:a 96k ${id}_vi_720p.mp4) && ffprobe -v error -show_entries format=duration -of csv=p=0 ${id}_vi_720p.mp4 | grep -qE '^[0-9]'" || continue
-      mkdir -p "$BASE/$lroot/$tag"
-      rsync -a --partial -e "$SSH" $H:/workspace/$root/$tag/${id}_vi_720p.mp4 :/workspace/$root/$tag/${id}_vi.srt :/workspace/$root/$tag/${id}_vi.fit.units.json :/workspace/$root/$tag/${id}_vi.transcript.txt :/workspace/$root/$tag/run.log "$BASE/$lroot/$tag/" && [ -s "$BASE/$lroot/$tag/${id}_vi_720p.mp4" ] && touch "$BASE/$lroot/$tag/.synced" && echo "$(date +%FT%T) synced $tag" && {
-        # free server space: remove the heavy files only when the local 720p copy has the exact server size (JSON/srt/log stay)
-        lsz=$(stat -f %z "$BASE/$lroot/$tag/${id}_vi_720p.mp4"); course=${root#out_}
-        $SSH $H "[ \"\$(stat -c %s /workspace/$root/$tag/${id}_vi_720p.mp4 2>/dev/null)\" = \"$lsz\" ] && rm -f /workspace/$root/$tag/${id}_vi.mp4 /workspace/$root/$tag/${id}_vi_720p.mp4 /workspace/$root/$tag/${id}_vi_original.m4a /workspace/samples/$course/$id.mp4 && echo cleaned-$tag" ; }
-    done
-  done
-  sleep 600
+  sleep 90
 done
