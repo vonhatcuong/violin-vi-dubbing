@@ -45,6 +45,7 @@ import shutil
 import sys
 import tempfile
 import threading
+from dataclasses import asdict
 from pathlib import Path
 
 from pipeline import config as pipeline_config
@@ -81,6 +82,26 @@ def load_segments(path: str) -> tuple[list[Segment], str]:
         for s in data["segments"]
     ]
     return segments, stage
+
+
+def _check_fit_stage(cfg: dict, stage: str) -> str | None:
+    """Return an error message when resuming would bypass the duration fitter.
+
+    ``fit.enabled`` configs (local presets) rely on the fitter's budgets,
+    shortening, and pause borrowing to line up TTS with the source timing.
+    Resuming from a "transcribed" or "translated" checkpoint would skip that
+    stage entirely and go straight to plain TTS + merge, silently dropping
+    the fit — only the "fitted" checkpoint already carries its output.
+    """
+    if cfg.get("fit", {}).get("enabled") and stage != "fitted":
+        return (
+            f"config has fit.enabled=true, but --segments is a '{stage}' checkpoint. "
+            "Resuming from transcribed/translated segments would skip the duration "
+            "fitter (budgets, shortening, pause borrowing) entirely. Either pass "
+            "--config pointing at a config with fit.enabled: false, or resume from "
+            "the *.fitted.segments.json artifact instead."
+        )
+    return None
 
 
 def _resolve_voice(voice: str | None, lang_code: str, cfg: dict) -> str:
@@ -124,6 +145,11 @@ def main() -> int:
     if not segments:
         print("[resume] No segments — abort.", file=sys.stderr)
         return 1
+
+    fit_error = _check_fit_stage(cfg, stage)
+    if fit_error:
+        print(f"[resume] ERROR: {fit_error}", file=sys.stderr)
+        return 2
 
     total_duration = get_video_duration(args.input)
     lang = language_code(args.language)
@@ -172,11 +198,7 @@ def main() -> int:
                 json.dumps({
                     "stage": "translated",
                     "count": len(translated),
-                    "segments": [
-                        {"id": s.id, "start": s.start, "end": s.end,
-                         "text": s.text, "speaker": s.speaker}
-                        for s in translated
-                    ],
+                    "segments": [asdict(s) for s in translated],
                 }, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
