@@ -46,7 +46,7 @@ merge:
 
 fit:
   enabled: true
-  sec_per_syllable: 0.23                # measured on VieNeu presets Phạm Tuyên/Ngọc Huyền (0.225); re-measure with scripts/calibrate_voice.py
+  sec_per_syllable: 0.22                 # measured with scripts/calibrate_voice.py (Thanh Bình 0.217, Ngọc Huyền 0.230, Minh Đức 0.270)
   min_fill: 0.6                         # VieNeu speaks faster than the lecturer (~73 % measured fill); slow under-filled units gently
   pipelined: true
 
@@ -55,7 +55,7 @@ vieneu:
   precision: int8
 
 voices:
-  default_male: "Phạm Tuyên"            # VieNeu presets (Bắc, natural); see pipeline/tts_vieneu.py for all 20
+  default_male: "Thanh Bình"            # VieNeu presets (Bắc, natural); see pipeline/tts_vieneu.py for all 20
   default_female: "Ngọc Huyền"
 
 tts:

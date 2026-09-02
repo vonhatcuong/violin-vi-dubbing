@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import config as pipeline_config
+from . import diarizer
 from . import fitter
 from .costs import CostTracker
 from .extractor import ensure_video_input, extract_audio, get_video_duration
@@ -30,6 +31,7 @@ from .timemap import build_time_map
 from .transcriber import Segment, merge_continuous_segments, split_into_sentences, split_long_segments, transcribe
 from .translator import shorten_segment, translate_segments
 from .tts import make_batch_synthesizer, make_synthesizer, native_voices_for, synthesize_segments
+from .voices import assign_voices, guess_genders
 
 ProgressCallback = Callable[[int, str], None]
 CancelCallback = Callable[[], bool]
@@ -53,11 +55,19 @@ class DubOptions:
     burn_subtitles: bool = False          # create a second video with subtitles burned in
     prefer_source_captions: bool = True   # URL inputs: prefer YouTube captions over Whisper
     fit: bool | None = None               # None → config fit.enabled; duration fitter (local dubbing)
+    speakers: str = "1"                   # "1" (off) | "auto" (auto-detect count) | "N" (fixed speaker count)
+    voice_map: dict[str, str] | None = None  # explicit SPEAKER_xx → voice name overrides
 
     # BYOK overrides (used by the web app when a user supplies their own keys)
     together_api_key: str | None = None
     openai_api_key: str | None = None
     elevenlabs_api_key: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.speakers != "auto" and not (self.speakers.isdigit() and int(self.speakers) >= 1):
+            raise ValueError(
+                f'DubOptions.speakers must be "auto" or a positive integer string, got {self.speakers!r}'
+            )
 
 
 @dataclass
@@ -110,8 +120,7 @@ def dub_video(
         if segments_override is not None:
             _emit(on_progress, 2, f"Using source captions ({len(segments_override)} segments)…")
             segments = segments_override
-            raw_sentences = [replace(s) for s in segments]
-            _persist_segments(raw_sentences, output_video_path, "sentences")
+            audio_path: str | None = None
             tracker.record_step("Source captions")
         else:
             _emit(on_progress, 1, "Extracting audio…")
@@ -125,13 +134,54 @@ def dub_video(
             _check_cancel(is_cancelled)
             _emit(on_progress, 2, f"Transcribing with Whisper Large v3… (duration: {total_duration:.0f}s)")
             segments = transcribe(audio_path, transcription_client)
-            raw_sentences = [replace(s) for s in segments]
-            _persist_segments(raw_sentences, output_video_path, "sentences")
             tracker.record_step("Transcription (Whisper)")
 
         lang_code = language_code(opts.target_language)
         fit_cfg = cfg.get("fit", {})
         fit_enabled = bool(fit_cfg.get("enabled", False)) if opts.fit is None else bool(opts.fit)
+        effective_voice = _resolve_voice(opts.voice, lang_code, cfg)
+
+        # ── Diarization + per-speaker voice assignment (Task 24) ──
+        # Must run before merge_continuous_segments: merging only glues same-speaker
+        # segments, so mislabeling here would let it join two different speakers.
+        vcfg = cfg.get("voices", {})
+        dcfg = cfg.get("diarization", {})
+        voice_map: dict[str, str] = {}
+        if opts.speakers != "1" or bool(dcfg.get("enabled", False)):
+            _check_cancel(is_cancelled)
+            if audio_path is None:
+                audio_path = extract_audio(input_path, str(tmp_dir / "audio.wav"))
+            _emit(on_progress, 2, "Diarizing speakers…")
+            hf_token_env = dcfg.get("hf_token_env")
+            labels = diarizer.label_segments(
+                audio_path, segments,
+                backend=dcfg.get("backend", "ecapa"),
+                num_speakers=None if opts.speakers == "auto" else int(opts.speakers),
+                max_speakers=int(dcfg.get("max_speakers", 4)),
+                threshold=float(dcfg.get("threshold", 0.65)),
+                hf_token=os.environ.get(hf_token_env) if hf_token_env else None,
+                model=dcfg.get("model", "speechbrain/spkrec-ecapa-voxceleb"),
+                pyannote_model=dcfg.get("pyannote_model", "pyannote/speaker-diarization-community-1"),
+                device=dcfg.get("device", "auto"),
+            )
+            segments = [replace(s, speaker=lab) for s, lab in zip(segments, labels)]
+            _persist_segments(segments, output_video_path, "diarized")
+            tracker.record_step("Diarization")
+
+            genders: dict[str, str] = {}
+            if vcfg.get("gender_detect", False):
+                genders = guess_genders(audio_path, segments)
+
+            speakers_order = list(dict.fromkeys(s.speaker for s in segments))
+            voice_map = assign_voices(
+                speakers_order, effective_voice, opts.voice_map, genders,
+                speaker_voices=vcfg.get("speaker_voices"), preset_genders=vcfg.get("preset_genders"),
+            )
+            voices_json_path = Path(output_video_path).with_suffix(".voices.json")
+            voices_json_path.write_text(json.dumps(voice_map, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        raw_sentences = [replace(s) for s in segments]
+        _persist_segments(raw_sentences, output_video_path, "sentences")
 
         segments = merge_continuous_segments(segments)
         tcfg = cfg.get("transcription", {})
@@ -154,7 +204,6 @@ def dub_video(
         if fit_enabled and fit_cfg.get("pipelined"):
             # Overlap translation batch N+1 (LLM) with shortening + TTS of batch N
             # (VieNeu) — different devices, so both run concurrently.
-            effective_voice = _resolve_voice(opts.voice, lang_code, cfg)
             tts_label = cfg["models"]["tts"]["model"]
             _emit(on_progress, 3,
                   f"Translating + synthesizing {len(segments)} segments to {opts.target_language} "
@@ -163,7 +212,6 @@ def dub_video(
             tts_dir.mkdir()
 
             mix_volume, original_audio_volume, gap_vol = _voiceover_volumes(opts, cfg)
-            voice_map: dict[str, str] = {}  # Task 24 fills per-speaker voices
 
             def _shorten(src: str, cur: str, budget_syll: int, budget_s: float) -> str:
                 return shorten_segment(src, cur, budget_syll, budget_s, opts.target_language,
@@ -220,7 +268,6 @@ def dub_video(
                 translated = split_into_sentences(translated)
 
             _check_cancel(is_cancelled)
-            effective_voice = _resolve_voice(opts.voice, lang_code, cfg)
             tts_label = cfg["models"]["tts"]["model"]
             _emit(on_progress, 4, f"Synthesizing TTS with {tts_label} (voice: {effective_voice})…")
             tts_dir = tmp_dir / "tts"
@@ -229,7 +276,7 @@ def dub_video(
             mix_volume, original_audio_volume, gap_vol = _voiceover_volumes(opts, cfg)
 
             if fit_enabled:
-                units = fitter.build_units(translated, slots, {}, effective_voice)
+                units = fitter.build_units(translated, slots, voice_map, effective_voice)
 
                 def _shorten(src: str, cur: str, budget_syll: int, budget_s: float) -> str:
                     return shorten_segment(src, cur, budget_syll, budget_s, opts.target_language,
@@ -275,6 +322,7 @@ def dub_video(
                 tts_paths = synthesize_segments(
                     translated, effective_voice, str(tts_dir),
                     language=lang_code,
+                    voice_map=voice_map,
                     tracker=tracker,
                     speed=style.tts_speed,
                     emotion=style.tts_emotion,

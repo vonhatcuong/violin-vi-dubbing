@@ -17,12 +17,43 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import numpy as np
 import yaml
 
 from . import config as _conf
 
+if TYPE_CHECKING:
+    from .transcriber import Segment
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# VieNeu-TTS v3 Turbo's 20 preset voices → gender. Used by `assign_voices` to
+# pick a gender-matched preset out of `voices.speaker_voices` when the config
+# doesn't supply its own `voices.preset_genders` map.
+PRESET_GENDERS: dict[str, str] = {
+    "Phạm Tuyên": "male",
+    "Ngọc Huyền": "female",
+    "Minh Đức": "male",
+    "Trúc Ly": "female",
+    "Thái Sơn": "male",
+    "Mai Anh": "female",
+    "Adam": "male",
+    "Quang Sơn": "male",
+    "Ngọc Trân": "female",
+    "Xuân Vĩnh": "male",
+    "Minh Triết": "male",
+    "Đức Trí": "male",
+    "Thục Đoan": "female",
+    "Thùy Dung": "female",
+    "Mỹ Duyên": "female",
+    "Kim Thanh": "female",
+    "Thanh Bình": "male",
+    "Ngọc Linh": "female",
+    "Đoan Trang": "female",
+    "Quỳnh Anh": "female",
+}
 
 
 @dataclass(frozen=True)
@@ -103,19 +134,118 @@ def assign_voices(
     voice_map: dict[str, str] | None = None,
     genders: dict[str, str] | None = None,
     bank: Path | None = None,
+    speaker_voices: list[str] | None = None,
+    preset_genders: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """speaker → voice name. Priority: explicit map > detected gender > default."""
+    """speaker → voice name. Priority: explicit map > detected gender > default.
+
+    - `voice_map[spk]` always wins.
+    - Known gender + `speaker_voices` given: first name in `speaker_voices` whose
+      gender (via `preset_genders`, default `PRESET_GENDERS`) matches; if none
+      matches, falls back to the voice bank's male/female pick (`native_voices_for`).
+    - Unknown gender: round-robin over `speaker_voices` in order of first
+      appearance (old behaviour — falls back to `default_voice` — when
+      `speaker_voices` is None/empty).
+    """
     voice_map = voice_map or {}
     genders = genders or {}
-    male, female = native_voices_for("vi", bank=bank)
+    pg = PRESET_GENDERS if preset_genders is None else preset_genders
+    bank_defaults: list[str] | None = None  # lazy — only touch the (often-empty) bank catalog if actually needed
+
     out: dict[str, str] = {}
+    rr = 0
     for spk in speakers:
+        gender = genders.get(spk)
         if spk in voice_map:
             out[spk] = voice_map[spk]
-        elif genders.get(spk) == "female":
-            out[spk] = female
-        elif genders.get(spk) == "male":
-            out[spk] = male
+        elif gender in ("male", "female"):
+            match = next((v for v in (speaker_voices or []) if pg.get(v) == gender), None)
+            if match is not None:
+                out[spk] = match
+            else:
+                if bank_defaults is None:
+                    bank_defaults = native_voices_for("vi", bank=bank)
+                male, female = bank_defaults
+                out[spk] = female if gender == "female" else male
+        elif speaker_voices:
+            out[spk] = speaker_voices[rr % len(speaker_voices)]
+            rr += 1
         else:
             out[spk] = default_voice
+    return out
+
+
+def guess_genders(audio_path: str, segments: list["Segment"]) -> dict[str, str]:
+    """Median-F0 gender guess per speaker.
+
+    Concatenates up to 12 s of 16 kHz audio per speaker (from their segments),
+    estimates F0 per 40 ms frame (640 samples, 320-sample hop) via normalized
+    autocorrelation — a frame counts as voiced when RMS > 0.01 and the
+    autocorrelation peak (searched over lag 40-228 samples, i.e. ~70-400 Hz)
+    exceeds 0.5 — and classifies the speaker by the median voiced F0:
+    < 165 Hz → male, else female. Speakers with no voiced frames are omitted.
+    """
+    import soundfile as sf
+
+    wav, sr = sf.read(audio_path, dtype="float32")
+    if wav.ndim > 1:
+        wav = wav.mean(axis=1)
+    n_samples = len(wav)
+    max_samples = int(round(12.0 * sr))
+
+    order: list[str] = []
+    chunks: dict[str, list[np.ndarray]] = {}
+    totals: dict[str, int] = {}
+    for seg in segments:
+        spk = seg.speaker
+        if spk not in chunks:
+            chunks[spk] = []
+            totals[spk] = 0
+            order.append(spk)
+        remaining = max_samples - totals[spk]
+        if remaining <= 0:
+            continue
+        s0 = max(0, min(n_samples, int(round(seg.start * sr))))
+        s1 = max(0, min(n_samples, int(round(seg.end * sr))))
+        if s1 <= s0:
+            continue
+        piece = wav[s0:s1][:remaining]
+        chunks[spk].append(piece)
+        totals[spk] += len(piece)
+
+    frame, hop = 640, 320
+    lag_min, lag_max = 40, 228
+    out: dict[str, str] = {}
+    for spk in order:
+        pieces = chunks.get(spk) or []
+        if not pieces:
+            continue
+        audio = np.concatenate(pieces)
+        f0s: list[float] = []
+        for start in range(0, len(audio) - frame + 1, hop):
+            frm = audio[start:start + frame]
+            rms = float(np.sqrt(np.mean(frm.astype(np.float64) ** 2)))
+            if rms <= 0.01:
+                continue
+            centered = frm - frm.mean()
+            ac = np.correlate(centered, centered, mode="full")
+            ac = ac[len(ac) // 2:]
+            if ac[0] <= 0:
+                continue
+            ac_norm = ac / ac[0]
+            window = ac_norm[lag_min:lag_max + 1]
+            if len(window) == 0:
+                continue
+            peak_i = int(np.argmax(window))
+            peak_val = float(window[peak_i])
+            if peak_val <= 0.5:
+                continue
+            lag = lag_min + peak_i
+            f0 = sr / lag
+            if 70.0 <= f0 <= 400.0:
+                f0s.append(f0)
+        if not f0s:
+            continue
+        median_f0 = float(np.median(f0s))
+        out[spk] = "male" if median_f0 < 165.0 else "female"
     return out

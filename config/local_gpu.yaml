@@ -46,7 +46,7 @@ merge:
 
 fit:
   enabled: true
-  sec_per_syllable: 0.23
+  sec_per_syllable: 0.22
   min_fill: 0.6                         # VieNeu speaks faster than the lecturer (~73 % measured fill); slow under-filled units gently
   pipelined: true
 
@@ -56,8 +56,9 @@ vieneu:
   max_batch_size: 32
 
 voices:
-  default_male: "Phạm Tuyên"
+  default_male: "Thanh Bình"
   default_female: "Ngọc Huyền"
+  gender_detect: true    # guess each diarized speaker's gender from F0 (GPU has headroom; use with --speakers auto/N)
 
 tts:
   workers: 1

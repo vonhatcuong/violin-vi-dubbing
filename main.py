@@ -49,6 +49,27 @@ def _print_styles() -> None:
             print(f"  {'':14s}  TTS: {', '.join(parts)}")
 
 
+def _speakers_type(value: str) -> str:
+    """argparse `type=` validator for `--speakers`: "auto" or a positive integer string."""
+    if value == "auto" or (value.isdigit() and int(value) >= 1):
+        return value
+    raise argparse.ArgumentTypeError(f'--speakers must be "auto" or a positive integer, got {value!r}')
+
+
+def _parse_voice_map(value: str | None) -> dict[str, str] | None:
+    """Parse `"SPEAKER_00=Phạm Tuyên,SPEAKER_01=Ngọc Huyền"` into a dict, or None if empty."""
+    if not value:
+        return None
+    out: dict[str, str] = {}
+    for pair in value.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        speaker, _, name = pair.partition("=")
+        out[speaker.strip()] = name.strip()
+    return out or None
+
+
 def _install_skill() -> None:
     """Copy the bundled Claude Code skill into ~/.claude/skills/ and exit."""
     import shutil
@@ -81,6 +102,8 @@ def translate_video(
     prefer_source_captions: bool = True,
     fit: bool | None = None,
     subtitle_lang: str | None = None,
+    speakers: str = "1",
+    voice_map: dict[str, str] | None = None,
 ) -> None:
     if style is None:
         style = resolve_style("standard")
@@ -104,6 +127,8 @@ def translate_video(
         subtitle_formats=subtitle_formats,
         burn_subtitles=burn_subtitles,
         fit=fit,
+        speakers=speakers,
+        voice_map=voice_map,
     )
 
     tmp_download_dir = None
@@ -222,6 +247,15 @@ def main() -> None:
         "--no-fit", action="store_true",
         help="Disable the duration fitter even if the config enables it (local dubbing)",
     )
+    parser.add_argument(
+        "--speakers", type=_speakers_type, default="1",
+        help='Diarize and assign a voice per speaker: "1" (default, off), "auto" (auto-detect count), '
+             'or a fixed count like "3"'
+    )
+    parser.add_argument(
+        "--voice-map", default=None,
+        help='Per-speaker voice overrides, e.g. "SPEAKER_00=Phạm Tuyên,SPEAKER_01=Ngọc Huyền"'
+    )
 
     args = parser.parse_args()
 
@@ -282,6 +316,8 @@ def main() -> None:
         prefer_source_captions=prefer_source_captions,
         fit=False if args.no_fit else None,
         subtitle_lang=args.subtitle_lang,
+        speakers=args.speakers,
+        voice_map=_parse_voice_map(args.voice_map),
     )
 
 

@@ -60,8 +60,37 @@ tts:
 # ── 3b. Voice bank (fixed voices for zero-shot local TTS, e.g. vieneu) ──
 voices:
   bank: "assets/voices/vi"   # directory with catalog.yaml + reference WAVs
-  default_male: "Phạm Tuyên"   # VieNeu preset name or voice-bank name
+  default_male: "Thanh Bình"   # VieNeu preset name or voice-bank name
   default_female: "Ngọc Huyền" # VieNeu preset name or voice-bank name
+  gender_detect: false         # true: guess each diarized speaker's gender from F0 (median autocorrelation pitch)
+  speaker_voices:               # round-robin pool for diarized speakers with no voice_map entry / no gender match
+    - "Thanh Bình"
+    - "Ngọc Huyền"
+    - "Minh Đức"
+    - "Trúc Ly"
+    - "Thái Sơn"
+    - "Mai Anh"
+  preset_genders:               # VieNeu preset name → gender (used to gender-match speaker_voices)
+    "Phạm Tuyên": male
+    "Ngọc Huyền": female
+    "Minh Đức": male
+    "Trúc Ly": female
+    "Thái Sơn": male
+    "Mai Anh": female
+    "Adam": male
+    "Quang Sơn": male
+    "Ngọc Trân": female
+    "Xuân Vĩnh": male
+    "Minh Triết": male
+    "Đức Trí": male
+    "Thục Đoan": female
+    "Thùy Dung": female
+    "Mỹ Duyên": female
+    "Kim Thanh": female
+    "Thanh Bình": male
+    "Ngọc Linh": female
+    "Đoan Trang": female
+    "Quỳnh Anh": female
 
 # ── 3b2. Diarization (sentence-level speaker labelling; off by default) ──
 diarization:

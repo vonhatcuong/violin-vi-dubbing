@@ -94,7 +94,7 @@ def test_unknown_voice_raises_helpful_error(env, tmp_path):
 
 
 def test_native_voices_come_from_config_defaults(env):
-    assert tts_vieneu.native_voices_for("vi") == ["Phạm Tuyên", "Ngọc Huyền"]
+    assert tts_vieneu.native_voices_for("vi") == ["Thanh Bình", "Ngọc Huyền"]
 
 
 def test_make_synthesizer_uses_vieneu_backend(env, tmp_path, monkeypatch):
