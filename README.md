@@ -223,7 +223,10 @@ violin lecture.mp4 lecture_fr.mp4 --language French --voice "french narrator man
 violin lecture.mp4 lecture_ja.mp4 --language Japanese --no-subtitles
 
 # Write SRT/VTT/TXT and a burned-subtitle copy
-violin lecture.mp4 lecture_vi.mp4 --language Vietnamese --subtitle-formats srt,vtt,txt --burn-subtitles
+violin lecture.mp4 lecture_vi.mp4 --language Vietnamese --subtitle-formats srt,vtt,txt
+# subtitles stay as sidecar files; attach them yourself as a toggleable soft track if you want them inside the MP4:
+#   ffmpeg -i lecture_vi.mp4 -i lecture_vi.srt -c copy -c:s mov_text -metadata:s:s:0 language=eng lecture_vi_soft.mp4
+# or add --burn-subtitles for a hard-subbed <output>_subtitled.mp4
 
 # Full replacement (no original audio underneath)
 violin lecture.mp4 lecture_ko.mp4 --language Korean --no-voiceover
