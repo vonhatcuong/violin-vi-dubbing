@@ -2510,7 +2510,9 @@ merge_video:
 
 ```yaml
 # NVIDIA GPU preset — FULLY LOCAL. Same stages as local_mac.yaml on CUDA.
-# Tested on Vast.ai 2× RTX 3090: Ollama on GPU 1 (CUDA_VISIBLE_DEVICES=1 ollama serve), ASR/TTS on GPU 0.
+# Tested on Vast.ai 2× RTX 3090: Ollama on one GPU, ASR/TTS on the other.
+#   CUDA_VISIBLE_DEVICES=1 OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_FLASH_ATTENTION=1 ollama serve
+#     (without OLLAMA_CONTEXT_LENGTH Ollama defaults gemma4:31b to a 262k context and spills half the model to CPU → 3 tok/s)
 #   uv sync --extra local-gpu
 #   uv pip install "torch==2.8.0" "torchaudio==2.8.0" --index-url https://download.pytorch.org/whl/cu128   # VieNeu GPU engine
 #   ollama pull gemma4:31b            # Q4, ~19 GB — fits a 24 GB card
@@ -2694,8 +2696,8 @@ Chạy `uv lock` (chỉ resolve, không cài); nếu Mac đang bận, chạy tr�
 # Mac
 brew list ollama || brew install ollama; brew services start ollama; ollama pull gemma4:12b-mlx
 # GPU server (Vast.ai)
-CUDA_VISIBLE_DEVICES=1 OLLAMA_MODELS=/workspace/ollama nohup ollama serve > /workspace/ollama.log 2>&1 &
-ollama pull gemma4:31b
+CUDA_VISIBLE_DEVICES=1 OLLAMA_MODELS=/workspace/ollama OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_FLASH_ATTENTION=1 nohup ollama serve > /workspace/ollama.log 2>&1 &
+ollama pull gemma4:31b            # translation.reasoning_effort: none (Task 13) keeps Gemma 4 from hidden thinking
 uv pip install "torch==2.8.0" "torchaudio==2.8.0" --index-url https://download.pytorch.org/whl/cu128
 # (tuỳ chọn) clone giọng riêng thay vì preset:
 uv run scripts/make_ref_clip.py --source <clip giọng Việt> --start 0 --end 8 --name nam-1 --gender male
@@ -2729,7 +2731,7 @@ uv sync --extra local-mac            # or --extra local-gpu (see GPU torch note 
 uv run main.py lecture.mp4 lecture_vi.mp4 --language Vietnamese --config config/local_mac.yaml
 ```
 
-và một đoạn ngắn mô tả stage fit (`<output>.fit.units.json`, `--no-fit`). Trong `.claude/skills/video-translator/SKILL.md` thêm gợi ý dùng `--config config/local_mac.yaml` cho tiếng Việt offline.
+và một đoạn ngắn mô tả stage fit (`<output>.fit.units.json`, `--no-fit`), cùng 2 lưu ý vận hành Ollama: đặt `OLLAMA_CONTEXT_LENGTH=8192` khi chạy model 31B trên card 24 GB, và `translation.reasoning_effort: none` để tắt thinking của Gemma 4 (nhanh hơn ~10×). Trong `.claude/skills/video-translator/SKILL.md` thêm gợi ý dùng `--config config/local_mac.yaml` cho tiếng Việt offline.
 
 - [ ] **Step 5: Test + commit**
 
