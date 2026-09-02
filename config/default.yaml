@@ -39,6 +39,7 @@ translation:
   max_retries: 3
   temperature: 0.3
   response_format: json_schema   # json_schema (OpenAI/Together) | json_object (Ollama, vLLM — plain JSON mode)
+  reasoning_effort: none         # ollama: "none" disables Gemma 4 / Qwen 3 hidden thinking (10× faster); openai_compat: sent only if set
   # ASR correction hints — tell the LLM about known transcription errors so it can fix
   # them during translation. Format: "wrong → correct (context)".
   asr_corrections:

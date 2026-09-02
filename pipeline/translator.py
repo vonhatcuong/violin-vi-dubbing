@@ -98,10 +98,23 @@ def _is_local_provider(cfg: dict) -> bool:
     return get_translation_provider(cfg) in ("ollama", "openai_compat")
 
 
-def _together_extra() -> dict[str, Any]:
-    """Return extra_body kwargs only when the translation provider is Together."""
-    if get_translation_provider(_conf.get()) == "together":
+def _provider_extra() -> dict[str, Any]:
+    """Provider-specific `extra_body` kwargs that switch off hidden reasoning.
+
+    together      → chat_template_kwargs.enable_thinking=False (Qwen on Together).
+    ollama        → reasoning_effort (default "none"): Gemma 4 thinks by default and
+                    the OpenAI-compatible endpoint ignores `think: false`; measured
+                    13 s → 1.1 s per sentence on gemma4:31b.
+    openai_compat → reasoning_effort only when `translation.reasoning_effort` is set
+                    (some servers reject unknown fields).
+    """
+    cfg = _conf.get()
+    provider = get_translation_provider(cfg)
+    if provider == "together":
         return {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    effort = _tcfg().get("reasoning_effort", "none" if provider == "ollama" else None)
+    if provider in ("ollama", "openai_compat") and effort:
+        return {"extra_body": {"reasoning_effort": effort}}
     return {}
 
 
@@ -149,7 +162,7 @@ def _translate_single(
                 ],
                 temperature=temp,
                 response_format=_response_format("single_translation", SINGLE_SCHEMA),
-                **_together_extra(),
+                **_provider_extra(),
             )
             if tracker and hasattr(response, "usage") and response.usage:
                 tracker.add_llm_usage(
@@ -222,7 +235,7 @@ def _try_batch(
                 ],
                 temperature=temp,
                 response_format=_response_format("translation_response", BATCH_SCHEMA),
-                **_together_extra(),
+                **_provider_extra(),
             )
 
             if tracker and hasattr(response, "usage") and response.usage:
@@ -357,7 +370,7 @@ def shorten_segment(
             messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
             temperature=0.2,
             response_format=_response_format("shortened_translation", SINGLE_SCHEMA),
-            **_together_extra(),
+            **_provider_extra(),
         )
         if tracker and getattr(response, "usage", None):
             tracker.add_llm_usage(response.usage.prompt_tokens or 0, response.usage.completion_tokens or 0)
