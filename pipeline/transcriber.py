@@ -407,6 +407,8 @@ def transcribe(
         for s in segs:
             s.start += offset
             s.end += offset
+            if s.words:
+                s.words = [[w, a + offset, b + offset] for w, a, b in s.words]
         print(f"      Chunk {idx + 1}/{len(chunks)} transcribed ({len(segs)} segments)")
         return idx, segs
 
