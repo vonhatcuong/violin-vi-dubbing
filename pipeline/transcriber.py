@@ -107,12 +107,12 @@ def _deduplicate_fragment(prev_text: str, frag_text: str) -> str:
     return frag_text
 
 
-def _absorb_short_segments(segments: list["Segment"], min_duration: float, max_gap: float) -> list["Segment"]:
+def _absorb_short_segments(segments: list["Segment"], min_duration: float, max_gap: float, max_duration: float) -> list["Segment"]:
     """Merge segments shorter than *min_duration* into a same-speaker neighbour.
 
     Sub-2.5 s units make TTS choppy and give the duration fitter no room to
     work; a short unit is glued to the previous segment when the gap allows,
-    otherwise the following one absorbs it.
+    otherwise the following one absorbs it. Never merges beyond max_duration.
     """
     if min_duration <= 0 or len(segments) < 2:
         return segments
@@ -127,7 +127,8 @@ def _absorb_short_segments(segments: list["Segment"], min_duration: float, max_g
         close = seg.speaker == prev.speaker and (seg.start - prev.end) <= max_gap
         short_cur = (seg.end - seg.start) < min_duration
         short_prev = (prev.end - prev.start) < min_duration
-        if close and (short_cur or short_prev):
+        within_max = (seg.end - prev.start) <= max_duration
+        if close and (short_cur or short_prev) and within_max:
             out[-1] = _join(prev, seg)
         else:
             out.append(seg)
@@ -182,7 +183,7 @@ def merge_continuous_segments(
 
     merged.append(current)
 
-    merged = _absorb_short_segments(merged, min_duration, max_gap)
+    merged = _absorb_short_segments(merged, min_duration, max_gap, max_duration)
 
     for i, seg in enumerate(merged):
         seg.id = i
