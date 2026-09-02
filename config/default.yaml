@@ -63,6 +63,17 @@ voices:
   default_male: "Phạm Tuyên"   # VieNeu preset name or voice-bank name
   default_female: "Ngọc Huyền" # VieNeu preset name or voice-bank name
 
+# ── 3b2. Diarization (sentence-level speaker labelling; off by default) ──
+diarization:
+  enabled: false
+  backend: ecapa                         # "ecapa" (local, ECAPA embeddings + clustering) | "pyannote" (gated HF model)
+  num_speakers: null                     # fixed speaker count, if known (skips threshold-based clustering)
+  max_speakers: 4                        # cap on auto-detected speaker count
+  threshold: 0.65                        # cosine-distance cut for agglomerative clustering (ecapa backend)
+  model: speechbrain/spkrec-ecapa-voxceleb
+  pyannote_model: pyannote/speaker-diarization-community-1
+  device: auto
+
 # ── 3c. VieNeu-TTS v3 Turbo (only used when models.tts.provider = vieneu) ──
 vieneu:
   backend: auto              # auto (ONNX on CPU / PyTorch on CUDA) | onnx | pytorch
