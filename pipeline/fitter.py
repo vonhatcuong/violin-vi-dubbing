@@ -5,10 +5,12 @@ Phase A (`fit_text`, LLM only):  estimate seconds from syllables; when the
     LLM to shorten the translation (≤ `max_shorten_rounds`).
 Phase B (`fit_audio`, TTS only): synthesize each unit once at natural speed,
     measure, and flag units still longer than their budget (`over_s`); the
-    TTS has no speed control, so the merger absorbs the residual.
+    TTS has no speed control, so the merger absorbs the residual. Units that
+    fill less than `fit.min_fill` of their slot are gently slowed instead
+    (ffmpeg `atempo` ≥ `fit.min_tempo`, pitch kept; off by default).
 `apply_units` then extends `Segment.end` to borrow the following pause
 (bounded by `slot_end`); whatever is still over is absorbed by the merger
-(video slow-down ≤ 8 %, atempo ≤ 1.4, hard trim). Speech is never slowed.
+(video slow-down ≤ 8 %, atempo ≤ 1.4, hard trim).
 
 Units are persisted as `<output>.fit.units.json` for inspection.
 """
@@ -17,12 +19,14 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
 import soundfile as sf
 
+from .ffmpeg_utils import FFMPEG_EXE
 from .transcriber import Segment
 from .vi_text import count_syllables
 
@@ -45,9 +49,10 @@ class DubUnit:
     est_s: float = 0.0
     tts_path: str = ""
     tts_dur: float = 0.0
-    strategy: str = "natural"   # natural | shortened | over | shortened+over
+    strategy: str = "natural"   # natural | shortened | over | shortened+over | slowed | ...+slowed
     rounds: int = 0
     over_s: float = 0.0          # seconds still over budget after phase B (merger absorbs)
+    tempo: float = 1.0           # ffmpeg atempo applied to under-filled units (≤ 1; 1 = unchanged)
 
     @property
     def budget_s(self) -> float:
@@ -120,11 +125,34 @@ def fit_text(units: list[DubUnit], shorten_fn: ShortenFn, fcfg: dict) -> None:
     print(f"      [fit] phase A: {shortened}/{len(units)} units shortened")
 
 
-def _measure(units: list[DubUnit]) -> None:
-    """Read each unit's `tts_path` duration and flag units over their budget (`over_s`)."""
+def _slow_down(path: str, tempo: float) -> None:
+    """Rewrite the WAV at `path` in place, slowed by ffmpeg `atempo` (44.1 kHz mono PCM16)."""
+    tmp = path + ".slow.wav"
+    subprocess.run([FFMPEG_EXE, "-y", "-v", "error", "-i", path, "-af", f"atempo={tempo:.4f}",
+                    "-c:a", "pcm_s16le", "-ar", "44100", "-ac", "1", tmp], check=True, capture_output=True)
+    os.replace(tmp, path)
+
+
+def _measure(units: list[DubUnit], fcfg: dict | None = None) -> None:
+    """Read each unit's `tts_path` duration and flag units over their budget (`over_s`).
+
+    When `fcfg["min_fill"] > 0`, a unit whose speech fills less than that
+    share of its slot is gently slowed (ffmpeg `atempo`, pitch kept, never
+    below `fcfg["min_tempo"]`) before the overrun is computed.
+    """
+    min_fill = float((fcfg or {}).get("min_fill", 0.0))
+    min_tempo = float((fcfg or {}).get("min_tempo", 0.85))
     over = 0
     for i, unit in enumerate(units):
         unit.tts_dur = wav_duration(unit.tts_path)
+        budget = unit.budget_s
+        if min_fill > 0 and budget > 0 and unit.tts_dur < min_fill * budget:
+            tempo = max(min_tempo, unit.tts_dur / (min_fill * budget))
+            if tempo < 0.995:
+                _slow_down(unit.tts_path, tempo)
+                unit.tts_dur = wav_duration(unit.tts_path)
+                unit.tempo = round(tempo, 3)
+                unit.strategy = "slowed" if unit.strategy == "natural" else unit.strategy + "+slowed"
         unit.over_s = round(max(0.0, unit.tts_dur - unit.budget_s), 3)
         if unit.over_s > 0:
             unit.strategy = "shortened+over" if unit.rounds else "over"
@@ -141,7 +169,8 @@ def fit_audio(
     VieNeu has no speed control, so nothing is re-synthesized here; units
     still longer than their budget are flagged (`over_s`) and the merger
     absorbs the overrun (video slow-down ≤ 8 %, atempo ≤ 1.4, hard trim).
-    `fcfg` is accepted for interface symmetry with `fit_text`.
+    `fcfg` is passed through to `_measure`, which uses `min_fill`/`min_tempo`
+    to gently slow (ffmpeg `atempo`) units that under-fill their slot.
 
     When `synth_batch` is given, units are grouped by voice (first-appearance
     order), split into chunks of at most `fcfg["batch_chunk"]` units, and
@@ -175,7 +204,7 @@ def fit_audio(
         for unit in units:
             path = str(Path(out_dir) / f"seg_{unit.seg_id:05d}.wav")
             unit.tts_path = synth(unit.text, unit.voice, path, 1.0)
-    _measure(units)
+    _measure(units, fcfg)
 
 
 def apply_units(units: list[DubUnit], segments: list[Segment]) -> tuple[list[Segment], list[str]]:

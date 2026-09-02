@@ -32,6 +32,8 @@ transcription:
   chunk_seconds: 600   # split audio into chunks of this length (seconds) for Whisper
   parallel_workers: 2  # number of parallel Whisper API calls for chunked audio
   prefer_source_captions: true  # URL inputs: reuse the video's own captions (manual → auto+LLM punctuation) instead of Whisper when available
+  max_sentence_seconds: 0   # >0: split ASR sentences longer than this at clause punctuation / silences (local presets: 12)
+  min_piece_seconds: 2.5    # minimum length of a split-off piece
 
 # ── 2. Translation ──────────────────────────────────────────
 translation:
@@ -93,6 +95,8 @@ fit:
   max_pause_borrow_s: 0.6     # how much of the following pause a sentence may borrow
   margin_s: 0.05              # keep this gap before the next sentence's onset
   batch_chunk: 32   # units per synth_batch call (memory bound; VieNeu batches internally up to vieneu.max_batch_size)
+  min_fill: 0.0  # >0: slow speech (atempo ≥ min_tempo, pitch kept) when a unit fills less than this share of its slot; presets 0.6
+  min_tempo: 0.85
 
 # ── 5. Video merge / alignment ──────────────────────────────
 merge_video:
