@@ -352,3 +352,7 @@ This is a personal open-source project, not a Together AI product. Users are res
 ## 🙏 Acknowledgements
 
 Built on top of [Together AI](https://together.ai), [Whisper](https://github.com/openai/whisper), [Cartesia Sonic 3](https://cartesia.ai), [ElevenLabs](https://elevenlabs.io), [FastAPI](https://fastapi.tiangolo.com/), and [ffmpeg](https://ffmpeg.org).
+
+## Runbook server GPU
+
+Dựng lại server GPU từ đầu (Vast.ai hoặc máy khác), gán GPU theo UUID, Ollama, cache model, lệnh chạy, copy kết quả và xử lý sự cố: xem [`docs/ops/gpu-server-runbook.md`](docs/ops/gpu-server-runbook.md).
