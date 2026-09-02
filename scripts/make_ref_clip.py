@@ -42,7 +42,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if not 3.0 <= args.end - args.start <= 15.0:
-        ap.error("clip length must be 3–15 s (F5-TTS reference sweet spot is 5–10 s)")
+        ap.error("clip length must be 3–15 s (VieNeu reference clip 3–8 s)")
 
     bank = bank_dir(Path(args.bank) if args.bank else None)
     bank.mkdir(parents=True, exist_ok=True)

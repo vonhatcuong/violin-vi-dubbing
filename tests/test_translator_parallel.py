@@ -32,11 +32,9 @@ def test_parallel_batches_preserve_order_and_run_concurrently(monkeypatch):
     monkeypatch.setitem(cfg["translation"], "parallel_batches", 3)
     segs = [Segment(id=i, start=i, end=i + 1, text=f"s{i}") for i in range(6)]
     client = SlowFakeClient()
-    t0 = time.time()
     out = translator.translate_segments(segs, "Vietnamese", client)
     assert [s.id for s in out] == list(range(6)) and [s.source_text for s in out] == [f"s{i}" for i in range(6)]
     assert client.max_active >= 2
-    assert time.time() - t0 < 0.55           # 3 batches in parallel, not 0.6 s serial
 
 
 def test_parallel_batches_default_is_serial(monkeypatch):

@@ -177,7 +177,8 @@ def dub_video(
 
             def _shorten(src: str, cur: str, budget_syll: int, budget_s: float) -> str:
                 return shorten_segment(src, cur, budget_syll, budget_s, opts.target_language,
-                                       translation_client, tracker=tracker)
+                                       translation_client, tracker=tracker,
+                                       source_language=opts.source_language)
 
             fitter.fit_text(units, _shorten, fit_cfg)
             synth = make_synthesizer(language=lang_code, emotion=style.tts_emotion)

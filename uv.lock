@@ -3845,22 +3845,16 @@ dependencies = [
 [package.optional-dependencies]
 local = [
     { name = "faster-whisper" },
-    { name = "librosa", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "librosa", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "supertonic" },
     { name = "vieneu" },
 ]
 local-gpu = [
     { name = "faster-whisper" },
-    { name = "librosa", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "librosa", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "transformers" },
     { name = "vieneu" },
 ]
 local-mac = [
     { name = "faster-whisper" },
-    { name = "librosa", version = "0.11.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "librosa", version = "1.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "supertonic" },
     { name = "vieneu" },
 ]
@@ -3882,9 +3876,6 @@ requires-dist = [
     { name = "ffmpeg-python", specifier = ">=0.2.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "imageio-ffmpeg", specifier = ">=0.6.0" },
-    { name = "librosa", marker = "extra == 'local'", specifier = ">=0.10" },
-    { name = "librosa", marker = "extra == 'local-gpu'", specifier = ">=0.10" },
-    { name = "librosa", marker = "extra == 'local-mac'", specifier = ">=0.10" },
     { name = "num2words", specifier = ">=0.5.14" },
     { name = "openai", specifier = ">=1.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },

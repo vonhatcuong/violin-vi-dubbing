@@ -153,7 +153,7 @@ A starter `config/prod.yaml` is included for public deployments. It adds upload 
 | `TOGETHER_API_KEY` | **Recommended** — covers every stage with the default config | Together AI API key |
 | `OPENAI_API_KEY` | Any stage uses `provider: openai` | Covers `whisper-1`, GPT models, and `tts-1` |
 | `ELEVENLABS_API_KEY` | TTS uses `provider: elevenlabs` | ElevenLabs API key |
-| `OLLAMA_API_KEY` | Translation/chat uses `provider: ollama` | Ollama Cloud API key |
+| `OLLAMA_API_KEY` | Only when `provider: ollama` points `base_url` at Ollama Cloud | Required for `models.translation.base_url: https://ollama.com/v1` (or `OLLAMA_BASE_URL` set to it); a local daemon (`provider: ollama` with no `base_url`, defaulting to `http://localhost:11434/v1`) needs no key |
 | `CORS_ORIGINS` | Optional | Comma-separated allowed origins (default: `*`) |
 
 > You only need keys for the providers you actually pick. Pure-OpenAI deployments (all stages on `openai`) work too — `OPENAI_API_KEY` alone is enough. Same idea for ElevenLabs.
@@ -162,7 +162,7 @@ A starter `config/prod.yaml` is included for public deployments. It adds upload 
 
 `config/local_mac.yaml` (Apple Silicon) and `config/local_gpu.yaml` (NVIDIA) run every stage on-device — faster-whisper for transcription, Gemma 4 via Ollama for translation, VieNeu-TTS v3 Turbo for voice synthesis — with no API keys and no network access after the models are downloaded.
 
-- **Fit stage** — after TTS, a syllable-budget fitter shortens translations that overrun their time slot and re-speeds/pause-borrows the audio to line up with the source timing. Per-unit details (budget, shortened text, measured overrun) are written to `<output>.fit.units.json`; pass `--no-fit` to disable the stage and keep the raw TTS timing.
+- **Fit stage** — a syllable-budget fitter shortens translations that would overrun their time slot before TTS; the audio itself is synthesized once at natural speed (never sped up) and pause-borrowed to line up with the source timing, with any residual overrun absorbed by the merger's atempo (≤ 1.4×) and video slow-down (≤ 8 %). Per-unit details (budget, shortened text, measured overrun) are written to `<output>.fit.units.json`; pass `--no-fit` to disable the stage and keep the raw TTS timing.
 - **Subtitle language** — both local presets default `subtitles.language: source`, so the SRT/VTT/TXT files (and burned-in subtitles) show the original English sentences re-timed to the dubbed video instead of the Vietnamese translation; pass `--subtitle-lang target` to get translated subtitles instead.
 - **Word-timed cues** — source subtitles are split into word-timed cues (≤ 2 lines, ≤ 6 s) — tune `subtitles.max_chars/max_duration`.
 - **Ollama context length** — on a 24 GB GPU, set `OLLAMA_CONTEXT_LENGTH=8192` when serving `gemma4:31b`; otherwise Ollama defaults to a much larger context and spills part of the model to CPU.

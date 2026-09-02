@@ -1,5 +1,7 @@
 """Two-pass TTS for natural voice + per-segment alignment.
 
+DEPRECATED — logic lives in `pipeline/fitter.py`; kept for reference.
+
 Pass 1: synth every segment at speed=1.0 (natural prosody), measure duration.
 Pass 2: re-synth ONLY segments where pass-1 audio overran the source slot
         (allowing for video stretch up to 1/clamp_min), at a per-segment

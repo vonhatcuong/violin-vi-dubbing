@@ -1,4 +1,4 @@
-"""Vietnamese text frontend for local TTS (F5-TTS-Vietnamese expects lowercase NFC text).
+"""Vietnamese text frontend for local Vietnamese TTS (VieNeu keeps case; lowercase is optional).
 
 normalize_for_tts:  NFC → loanword map → vinorm (if installed & enabled) → numbers/percent
                     → lowercase → drop unsupported symbols → collapse spaces.

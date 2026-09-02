@@ -1,4 +1,4 @@
-"""Fixed Vietnamese voice bank for zero-shot TTS backends (F5-TTS-vi).
+"""Fixed Vietnamese voice bank for zero-shot TTS backends (VieNeu-TTS, optional voice cloning).
 
 A voice = reference clip (5–10 s, 24 kHz mono WAV) + its exact transcript.
 Catalog lives in `<bank>/catalog.yaml`:

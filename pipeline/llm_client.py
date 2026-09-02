@@ -181,7 +181,6 @@ _PROVIDER_ENV_KEY = {
     # local-only providers — no env key required
     "faster-whisper": None,
     "supertonic":     None,
-    "f5vi":           None,
     "vieneu":         None,
 }
 
