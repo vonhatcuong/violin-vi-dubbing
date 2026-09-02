@@ -11,9 +11,9 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 
-# Ollama Cloud serves an OpenAI-compatible API at this base URL.
-# Get a key at https://ollama.com/settings/keys
-_OLLAMA_BASE_URL = "https://ollama.com/v1"
+# Ollama: local daemon by default; Ollama Cloud only when base_url points there.
+_OLLAMA_LOCAL_BASE_URL = "http://localhost:11434/v1"
+_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 
 
 def _parse_translation_config(cfg: dict[str, Any]) -> tuple[str, str]:
@@ -40,36 +40,59 @@ def get_translation_model(cfg: dict[str, Any]) -> str:
 
 
 def get_translation_provider(cfg: dict[str, Any]) -> str:
-    """Return 'openai', 'together', or 'ollama'."""
+    """Return 'openai', 'together', 'ollama' or 'openai_compat'."""
     provider, _ = _parse_translation_config(cfg)
     return provider
+
+
+def _entry_dict(cfg: dict[str, Any], section: str) -> dict[str, Any]:
+    entry = cfg["models"].get(section)
+    return entry if isinstance(entry, dict) else {}
 
 
 def _make_openai_compat_client(
     provider: str,
     *,
+    entry: dict[str, Any] | None = None,
     openai_key_override: str | None = None,
     ollama_key_override: str | None = None,
 ):
-    """Build an OpenAI SDK client pointed at the right base_url for *provider*.
+    """Build an OpenAI SDK client for `openai`, `ollama` or `openai_compat`.
 
-    Both `openai` and `ollama` providers share the OpenAI SDK surface; they
-    differ only in base_url and which env var supplies the API key.
+    ollama        → base_url = models.*.base_url | $OLLAMA_BASE_URL | localhost.
+                    A key is only required when base_url is Ollama Cloud.
+    openai_compat → any OpenAI-compatible server (vLLM, LiteLLM, llama.cpp);
+                    base_url = models.*.base_url | $OPENAI_COMPAT_BASE_URL (required).
     """
     from openai import OpenAI
 
+    entry = entry or {}
     if provider == "ollama":
-        api_key = ollama_key_override or os.environ.get("OLLAMA_API_KEY")
-        if not api_key:
+        base_url = (entry.get("base_url") or os.environ.get("OLLAMA_BASE_URL") or _OLLAMA_LOCAL_BASE_URL)
+        api_key = ollama_key_override or entry.get("api_key") or os.environ.get("OLLAMA_API_KEY")
+        if base_url.rstrip("/") == _OLLAMA_CLOUD_BASE_URL and not api_key:
             raise RuntimeError(
-                "OLLAMA_API_KEY is not set. Get one at https://ollama.com/settings/keys"
+                "OLLAMA_API_KEY is not set but base_url is Ollama Cloud. "
+                "Get one at https://ollama.com/settings/keys or point base_url at a local daemon."
             )
-        return OpenAI(api_key=api_key, base_url=_OLLAMA_BASE_URL)
+        return OpenAI(api_key=api_key or "ollama", base_url=base_url)
+
+    if provider == "openai_compat":
+        base_url = entry.get("base_url") or os.environ.get("OPENAI_COMPAT_BASE_URL")
+        if not base_url:
+            raise RuntimeError(
+                "provider openai_compat needs models.<stage>.base_url or OPENAI_COMPAT_BASE_URL."
+            )
+        api_key = entry.get("api_key") or os.environ.get("OPENAI_COMPAT_API_KEY") or "none"
+        return OpenAI(api_key=api_key, base_url=base_url)
 
     api_key = openai_key_override or os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
     return OpenAI(api_key=api_key)
+
+
+_OPENAI_COMPAT_PROVIDERS = ("openai", "ollama", "openai_compat")
 
 
 def make_translation_client(
@@ -82,9 +105,10 @@ def make_translation_client(
     """Create the appropriate chat client based on the translation provider config."""
     provider, _ = _parse_translation_config(cfg)
 
-    if provider in ("openai", "ollama"):
+    if provider in _OPENAI_COMPAT_PROVIDERS:
         return _make_openai_compat_client(
             provider,
+            entry=_entry_dict(cfg, "translation"),
             openai_key_override=openai_key_override,
             ollama_key_override=ollama_key_override,
         )
@@ -130,9 +154,10 @@ def make_chat_client(
     """
     provider, _ = _parse_chat_config(cfg)
 
-    if provider in ("openai", "ollama"):
+    if provider in _OPENAI_COMPAT_PROVIDERS:
         return _make_openai_compat_client(
             provider,
+            entry=_entry_dict(cfg, "chat"),
             openai_key_override=openai_key_override,
             ollama_key_override=ollama_key_override,
         )
@@ -150,10 +175,13 @@ _PROVIDER_ENV_KEY = {
     "together":       "TOGETHER_API_KEY",
     "openai":         "OPENAI_API_KEY",
     "elevenlabs":     "ELEVENLABS_API_KEY",
-    "ollama":         "OLLAMA_API_KEY",
+    # ollama: key only needed for Ollama Cloud — checked at client creation
+    "ollama":         None,
+    "openai_compat":  None,
     # local-only providers — no env key required
     "faster-whisper": None,
     "supertonic":     None,
+    "f5vi":           None,
 }
 
 
