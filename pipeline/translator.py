@@ -80,6 +80,24 @@ SINGLE_SCHEMA = {
 }
 
 
+def _response_format(name: str, schema: dict) -> dict:
+    """Build the `response_format` kwarg per `translation.response_format`.
+
+    json_schema (default) — strict schema; supported by OpenAI/Together.
+    json_object            — plain JSON mode; safer for Ollama/vLLM, which have
+                             hung on strict json_schema (see commit 3957df5).
+    """
+    mode = _tcfg().get("response_format", "json_schema")
+    if mode == "json_object":
+        return {"type": "json_object"}
+    return {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}}
+
+
+def _is_local_provider(cfg: dict) -> bool:
+    """Local LLM servers (Ollama, vLLM/llama.cpp via openai_compat) get the /no_think switch."""
+    return get_translation_provider(cfg) in ("ollama", "openai_compat")
+
+
 def _together_extra() -> dict[str, Any]:
     """Return extra_body kwargs only when the translation provider is Together."""
     if get_translation_provider(_conf.get()) == "together":
@@ -118,7 +136,7 @@ def _translate_single(
 
     # qwen3 (Ollama) reasons by default, making each call minutes-slow; the
     # /no_think soft switch disables it. Together uses extra_body instead (below).
-    if get_translation_provider(cfg) == "ollama":
+    if _is_local_provider(cfg):
         system_msg = "/no_think\n" + system_msg
 
     for attempt in range(1, max_retries + 1):
@@ -130,14 +148,7 @@ def _translate_single(
                     {"role": "user", "content": user_msg},
                 ],
                 temperature=temp,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "single_translation",
-                        "strict": True,
-                        "schema": SINGLE_SCHEMA,
-                    },
-                },
+                response_format=_response_format("single_translation", SINGLE_SCHEMA),
                 **_together_extra(),
             )
             if tracker and hasattr(response, "usage") and response.usage:
@@ -187,7 +198,7 @@ def _try_batch(
         prompt = _prompts.load("translate", "batch_user", **fmt)
 
     cfg = _conf.get()
-    if get_translation_provider(cfg) == "ollama":
+    if _is_local_provider(cfg):
         system_msg = "/no_think\n" + system_msg
     model = get_translation_model(cfg)
     max_retries = cfg["translation"]["max_retries"]
@@ -202,14 +213,7 @@ def _try_batch(
                     {"role": "user", "content": prompt},
                 ],
                 temperature=temp,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "translation_response",
-                        "strict": True,
-                        "schema": BATCH_SCHEMA,
-                    },
-                },
+                response_format=_response_format("translation_response", BATCH_SCHEMA),
                 **_together_extra(),
             )
 

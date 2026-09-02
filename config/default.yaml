@@ -38,6 +38,7 @@ translation:
   batch_size: 64
   max_retries: 3
   temperature: 0.3
+  response_format: json_schema   # json_schema (OpenAI/Together) | json_object (Ollama, vLLM — plain JSON mode)
   # ASR correction hints — tell the LLM about known transcription errors so it can fix
   # them during translation. Format: "wrong → correct (context)".
   asr_corrections:
