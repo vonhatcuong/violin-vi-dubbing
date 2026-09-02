@@ -29,7 +29,7 @@ models:
 
 transcription:
   chunk_seconds: 600
-  parallel_workers: 1
+  parallel_workers: 2                    # two whisper chunks concurrently on the GPU (validated on run #3)
   local_device: cuda
   local_compute_type: float16
 
