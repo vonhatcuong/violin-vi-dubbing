@@ -55,8 +55,23 @@ tts:
 # ── 3b. Voice bank (fixed voices for zero-shot local TTS, e.g. f5vi) ──
 voices:
   bank: "assets/voices/vi"   # directory with catalog.yaml + reference WAVs
-  default_male: ""           # voice name; empty = first male in catalog
-  default_female: ""         # voice name; empty = first female in catalog
+  default_male: "Phạm Tuyên"   # VieNeu preset name or voice-bank name
+  default_female: "Ngọc Huyền" # VieNeu preset name or voice-bank name
+
+# ── 3c. VieNeu-TTS v3 Turbo (only used when models.tts.provider = vieneu) ──
+vieneu:
+  backend: auto              # auto (ONNX on CPU / PyTorch on CUDA) | onnx | pytorch
+  precision: int8            # ONNX/CPU backbone: int8 (fast) | fp32 (max fidelity)
+  device: auto
+  threads: 0                 # ONNX intra-op threads, 0 = engine default
+  max_batch_size: 32         # PyTorch/GPU static batching cap
+  temperature: 0.8           # SDK recommendation for v3 Turbo
+  top_k: 25
+  top_p: 0.95
+  repetition_penalty: 1.2
+  watermark: true            # SDK audio watermark (apply_watermark)
+  normalize_numbers: false   # VieNeu's own normalizer already reads digits/percent/acronyms (verified on GPU spike); enable only for odd inputs
+  loanwords: {}              # optional pronunciation map, e.g. {"GPU": "gi pi u"}
 
 # ── 4. Segment merging (combine Whisper fragments into sentences) ──
 merge:

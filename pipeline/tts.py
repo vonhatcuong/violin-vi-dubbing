@@ -33,6 +33,8 @@ def _backend(provider: str | None = None):
         from . import tts_edge as _imp
     elif p == "supertonic":
         from . import tts_supertonic as _imp
+    elif p == "vieneu":
+        from . import tts_vieneu as _imp
     else:
         from . import tts_together as _imp
     return _imp
@@ -61,6 +63,10 @@ def _make_client(
     openai_api_key: str | None = None,
 ):
     """Build the right SDK client for the active provider, honoring caller-supplied API keys."""
+    if provider == "vieneu":
+        from . import tts_vieneu as _vn
+        return _vn.get_shared_tts()
+
     if provider == "supertonic":
         # Local on-device TTS — no API key. Returns the shared Supertonic
         # TTS instance, which is what tts_supertonic.synthesize_segment uses
@@ -134,3 +140,19 @@ def synthesize_segments(
         segments, voice, output_dir, backend_client, language,
         voice_map, tracker, speed, emotion,
     )
+
+
+def make_synthesizer(language: str = "en", emotion: str | None = None):
+    """Return `synth(text, voice, out_path, speed) -> out_path` bound to the active backend.
+
+    Used by pipeline.fitter, which calls TTS one segment at a time. Backends
+    without speed control (vieneu) ignore `speed`.
+    """
+    provider = get_tts_provider()
+    backend = _backend(provider)
+    client = _make_client(provider)
+
+    def _synth(text: str, voice: str, out_path: str, speed: float = 1.0) -> str:
+        return backend.synthesize_segment(text, voice, out_path, client, language, speed, emotion)
+
+    return _synth

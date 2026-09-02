@@ -182,6 +182,7 @@ _PROVIDER_ENV_KEY = {
     "faster-whisper": None,
     "supertonic":     None,
     "f5vi":           None,
+    "vieneu":         None,
 }
 
 

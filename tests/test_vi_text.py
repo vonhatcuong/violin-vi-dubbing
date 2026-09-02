@@ -73,3 +73,7 @@ def test_unsupported_symbols_are_dropped():
 
 def test_count_syllables_after_normalization():
     assert vi_text.count_syllables("Xin chào các bạn, 2 người!") == 6
+
+
+def test_lowercase_can_be_disabled():
+    assert vi_text.normalize_for_tts("Dùng GPU và 2 CPU", use_vinorm=False, lowercase=False) == "Dùng GPU và hai CPU"

@@ -2,6 +2,7 @@
 
 normalize_for_tts:  NFC → loanword map → vinorm (if installed & enabled) → numbers/percent
                     → lowercase → drop unsupported symbols → collapse spaces.
+                    lowercase là tuỳ chọn (VieNeu giữ nguyên hoa/thường và từ tiếng Anh).
 count_syllables:    Vietnamese is monosyllabic and space-delimited, so after
                     normalization every alphanumeric token is one syllable.
 """
@@ -103,6 +104,7 @@ def normalize_for_tts(
     *,
     use_vinorm: bool | None = None,
     loanwords: dict[str, str] | None = None,
+    lowercase: bool = True,
 ) -> str:
     """Return TTS-ready Vietnamese text: NFC, lowercase, numbers spelled out."""
     text = unicodedata.normalize("NFC", text or "")
@@ -114,7 +116,8 @@ def normalize_for_tts(
         except Exception:
             pass  # fall through to the built-in expansion
     text = _expand_numbers(text)
-    text = text.lower()
+    if lowercase:
+        text = text.lower()
     text = _ALLOWED_RE.sub(" ", text)
     text = _SPACES_RE.sub(" ", text).strip()
     return text
