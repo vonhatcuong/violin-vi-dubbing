@@ -3180,3 +3180,237 @@ Run: `uv run python -m pytest -q` → toàn bộ pass (+5).
 git add pipeline/timemap.py pipeline/merger.py pipeline/orchestrator.py main.py config/default.yaml config/local_mac.yaml config/local_gpu.yaml README.md .claude/skills/video-translator/SKILL.md tests/test_timemap.py tests/test_orchestrator_subtitles.py
 git commit -m "feat(subtitles): source-language subtitles re-timed to the output video (--subtitle-lang)"
 ```
+
+---
+
+### Task 16: Phụ đề theo mốc từ — cue ngắn, hiện đúng lúc đang nói (word-timed cues)
+
+**Yêu cầu user (2026-09-02, kèm ảnh):** phụ đề burn-in đang hiện nguyên cả câu dài (3 dòng) một lúc; cần "nói đến câu nào hiện câu đó" — cue ngắn theo thời gian thật, tối đa 2 dòng.
+
+**Thiết kế:** giữ word timestamps của ASR trên từng câu (`Segment.words`), rồi tách câu thành cue theo quy tắc phụ đề chuẩn (≤ 84 ký tự ≈ 2 dòng × 42, ≤ 6 s, ưu tiên ngắt ở dấu phẩy/chấm, gộp cue < 1 s); thời gian cue lấy từ từ đầu/từ cuối → map qua `build_time_map` như Task 15. Không có words (caption thủ công, JSON cũ) → chia theo tỉ lệ ký tự. Burn-in thêm `force_style` để font vừa mắt, 2 dòng.
+
+**Files:**
+- Modify: `pipeline/transcriber.py` (`Segment.words: list | None = None`; `_split_words_into_sentences` gắn words theo câu, đã cộng `offset`), `pipeline/captions.py:153` (`_segment_auto_words` gắn words), `resume_from_segments.py` (`load_segments` đọc `words`)
+- Create: `pipeline/subtitles.py`
+- Modify: `pipeline/orchestrator.py` (nhánh `source`: `split_into_cues` trước khi map thời gian; persist `<output>.sentences.segments.json`), `pipeline/merger.py::burn_subtitles` (`force_style` từ config), `config/default.yaml` (khối `subtitles` mở rộng), `README.md` (1 câu)
+- Test: `tests/test_subtitles_cues.py`, `tests/test_transcriber_words.py`, cập nhật `tests/test_orchestrator_subtitles.py` (+1 test)
+
+**Interfaces:**
+- `Segment.words: list[list] | None` — mỗi phần tử `[text, start, end]` (list để JSON hoá; `asdict` tự persist).
+- `subtitles.split_into_cues(sentences: list[Segment], *, max_chars=84, max_duration=6.0, min_duration=1.0) -> list[Segment]` — cue có `words=None`, id đánh lại từ 0, thời gian trên timeline nguồn.
+- Config `subtitles`: `language`, `max_chars: 84`, `max_duration: 6.0`, `min_duration: 1.0`, `burn_style: "FontName=Arial,FontSize=22,Outline=2,Shadow=0,MarginV=28"`.
+
+- [ ] **Step 1: Viết test thất bại**
+
+`tests/test_transcriber_words.py`:
+
+```python
+from types import SimpleNamespace
+
+from pipeline.transcriber import _split_words_into_sentences
+
+
+def _w(word, start, end):
+    return SimpleNamespace(word=word, start=start, end=end)
+
+
+def test_sentences_carry_word_timestamps_with_offset():
+    words = [_w(" Hello", 0.0, 0.4), _w(" there.", 0.5, 0.9), _w(" Second", 1.2, 1.6), _w(" one.", 1.7, 2.0)]
+    out = _split_words_into_sentences(words, offset=10.0)
+    assert [s.text for s in out] == ["Hello there.", "Second one."]
+    assert out[0].words == [["Hello", 10.0, 10.4], ["there.", 10.5, 10.9]]
+    assert out[1].start == 11.2 and out[1].words[-1] == ["one.", 11.7, 12.0]
+```
+
+`tests/test_subtitles_cues.py`:
+
+```python
+import pytest
+
+from pipeline.subtitles import split_into_cues
+from pipeline.transcriber import Segment
+
+
+def _sentence(words, start=None, end=None, text=None):
+    ws = [[w, s, e] for w, s, e in words]
+    return Segment(id=0, start=start if start is not None else ws[0][1], end=end if end is not None else ws[-1][2],
+                   text=text or " ".join(w for w, _, _ in words), words=ws)
+
+
+def test_breaks_at_punctuation_within_limits():
+    words = [(f"word{i}" + ("," if i == 5 else "."), i * 0.4, i * 0.4 + 0.3) for i in range(12)]  # 12 words ~ 6 chars each
+    cues = split_into_cues([_sentence(words)], max_chars=40, max_duration=10.0, min_duration=0.0)
+    assert len(cues) >= 2
+    assert all(len(c.text) <= 40 for c in cues)
+    assert cues[0].text.endswith("word5,")           # preferred break at the comma
+    assert cues[0].start == 0.0 and cues[0].end == pytest.approx(5 * 0.4 + 0.3)
+    assert cues[1].start == pytest.approx(6 * 0.4)
+    assert [c.id for c in cues] == list(range(len(cues)))
+
+
+def test_breaks_on_max_duration():
+    words = [(f"w{i}", i * 2.0, i * 2.0 + 1.5) for i in range(6)]   # 12 s of speech, short words
+    cues = split_into_cues([_sentence(words)], max_chars=84, max_duration=5.0, min_duration=0.0)
+    assert len(cues) >= 3
+    assert all(c.end - c.start <= 5.0 + 1e-6 for c in cues)
+
+
+def test_short_cue_is_merged_into_previous():
+    words = [("Hello", 0.0, 0.5), ("there,", 0.6, 1.0), ("ok.", 1.05, 1.2)]
+    cues = split_into_cues([_sentence(words)], max_chars=12, max_duration=6.0, min_duration=1.0)
+    # "Hello there," (12 chars) then "ok." would be a 0.15 s cue → merged back when it fits, else kept
+    assert cues[-1].end == pytest.approx(1.2)
+    assert sum(len(c.text.split()) for c in cues) == 3
+
+
+def test_fallback_without_words_splits_by_chars_and_time():
+    seg = Segment(id=0, start=10.0, end=20.0, text=" ".join(["abcde"] * 20))   # 119 chars, 10 s
+    cues = split_into_cues([seg], max_chars=60, max_duration=60.0, min_duration=0.0)
+    assert len(cues) == 2
+    assert cues[0].start == 10.0 and cues[-1].end == 20.0
+    assert cues[0].end == pytest.approx(cues[1].start)
+    assert all(len(c.text) <= 60 for c in cues)
+
+
+def test_sentence_within_limits_is_one_cue():
+    words = [("Short", 0.0, 0.3), ("one.", 0.4, 0.8)]
+    cues = split_into_cues([_sentence(words)], max_chars=84, max_duration=6.0, min_duration=1.0)
+    assert len(cues) == 1 and cues[0].text == "Short one." and cues[0].words is None
+```
+
+Thêm vào `tests/test_orchestrator_subtitles.py` một test giống `test_source_subtitles_use_english_sentences_retimed_to_output` nhưng `raw` có 1 câu dài với `words` (14 từ, 2 mệnh đề, 0–6 s) và config `subtitles.max_chars` = 30 (monkeypatch) → SRT phải có ≥ 2 cue và cue đầu kết thúc trước 6 s.
+
+- [ ] **Step 2: Chạy test, xác nhận thất bại**
+
+Run: `uv run python -m pytest tests/test_transcriber_words.py tests/test_subtitles_cues.py -v`
+Expected: FAIL — `TypeError: Segment.__init__() got an unexpected keyword argument 'words'`, `ModuleNotFoundError: pipeline.subtitles`.
+
+- [ ] **Step 3: `Segment.words` + gắn words**
+
+`pipeline/transcriber.py`: `Segment` thêm trường cuối `words: list | None = None   # [[text, start, end], ...] from ASR, kept on raw sentences for subtitle cues`. Trong `_split_words_into_sentences`, mỗi lần tạo `Segment(...)` (2 chỗ) thêm `words=[[(_g(w2, "word") or "").strip(), _g(w2, "start") + offset, _g(w2, "end") + offset] for w2 in current_words]`. `pipeline/captions.py:153`: `Segment(..., words=[[w.text, w.start, w.end] for w in cur])`. `resume_from_segments.py::load_segments`: `words=s.get("words")`.
+
+- [ ] **Step 4: `pipeline/subtitles.py`**
+
+```python
+"""Split ASR sentences into subtitle cues that follow the speech word by word.
+
+Readability rules: ≤ max_chars per cue (≈ 2 lines × 42), ≤ max_duration
+seconds, break preferably after , ; : . ! ?, never mid-word; cues shorter
+than min_duration are merged into the previous cue when the text still fits.
+Sentences without word timestamps fall back to character-proportional timing.
+"""
+
+from __future__ import annotations
+
+import math
+
+from .transcriber import Segment
+
+_BREAK_PUNCT = (",", ";", ":", ".", "!", "?", "。", "，")
+
+
+def _make_cue(words: list[list]) -> Segment:
+    return Segment(id=0, start=float(words[0][1]), end=max(float(words[-1][2]), float(words[0][1]) + 0.05),
+                   text=" ".join(w[0] for w in words).strip())
+
+
+def _best_break(buf: list[list]) -> int:
+    """Index to cut *buf* at (exclusive): last punctuation word past 40 % of the buffer, else the end."""
+    floor = max(1, math.ceil(len(buf) * 0.4))
+    for i in range(len(buf) - 1, floor - 1, -1):
+        if buf[i][0].endswith(_BREAK_PUNCT):
+            return i + 1
+    return len(buf)
+
+
+def _cues_from_words(seg: Segment, max_chars: int, max_duration: float) -> list[Segment]:
+    cues: list[Segment] = []
+    buf: list[list] = []
+    for w in seg.words or []:
+        if not str(w[0]).strip():
+            continue
+        cand = buf + [w]
+        text_len = len(" ".join(x[0] for x in cand))
+        dur = float(cand[-1][2]) - float(cand[0][1])
+        if buf and (text_len > max_chars or dur > max_duration):
+            k = _best_break(buf)
+            cues.append(_make_cue(buf[:k]))
+            buf = buf[k:] + [w]
+        else:
+            buf = cand
+    if buf:
+        cues.append(_make_cue(buf))
+    return cues
+
+
+def _cues_by_proportion(seg: Segment, max_chars: int) -> list[Segment]:
+    words = seg.text.split()
+    chunks: list[str] = []
+    cur = ""
+    for w in words:
+        nxt = (cur + " " + w).strip()
+        if cur and len(nxt) > max_chars:
+            chunks.append(cur)
+            cur = w
+        else:
+            cur = nxt
+    if cur:
+        chunks.append(cur)
+    total = sum(len(c) for c in chunks) or 1
+    dur = seg.end - seg.start
+    out: list[Segment] = []
+    t = seg.start
+    for i, c in enumerate(chunks):
+        end = seg.end if i == len(chunks) - 1 else t + dur * len(c) / total
+        out.append(Segment(id=0, start=t, end=end, text=c))
+        t = end
+    return out
+
+
+def split_into_cues(
+    sentences: list[Segment], *, max_chars: int = 84, max_duration: float = 6.0, min_duration: float = 1.0,
+) -> list[Segment]:
+    cues: list[Segment] = []
+    for seg in sentences:
+        parts = _cues_from_words(seg, max_chars, max_duration) if seg.words else _cues_by_proportion(seg, max_chars)
+        for p in parts:
+            prev = cues[-1] if cues else None
+            if (prev is not None and (p.end - p.start) < min_duration
+                    and len(prev.text) + 1 + len(p.text) <= max_chars
+                    and (p.end - prev.start) <= max_duration):
+                cues[-1] = Segment(id=0, start=prev.start, end=p.end, text=(prev.text + " " + p.text).strip(),
+                                   speaker=prev.speaker)
+            else:
+                cues.append(Segment(id=0, start=p.start, end=p.end, text=p.text, speaker=seg.speaker))
+    for i, c in enumerate(cues):
+        c.id = i
+    return cues
+```
+
+- [ ] **Step 5: Nối vào pipeline + config + burn style**
+
+`pipeline/orchestrator.py`, nhánh `source` của Task 15: thay `for i, s in enumerate(raw_sentences)` bằng duyệt `split_into_cues(raw_sentences, max_chars=scfg.get("max_chars", 84), max_duration=float(scfg.get("max_duration", 6.0)), min_duration=float(scfg.get("min_duration", 1.0)))` với `scfg = cfg.get("subtitles", {})`, rồi map `start/end` qua `tmap` như cũ. Persist `_persist_segments(raw_sentences, output_video_path, "sentences")` ngay sau khi tạo `raw_sentences`.
+
+`pipeline/merger.py::burn_subtitles`: đọc `style = _conf.get().get("subtitles", {}).get("burn_style", "")`; nếu có → `-vf f"subtitles='{escaped}':force_style='{style}'"`.
+
+`config/default.yaml` khối `subtitles` thành:
+
+```yaml
+subtitles:
+  language: target       # target = translated text on the output timeline | source = original-language ASR sentences re-timed to the output video
+  max_chars: 84          # per cue (≈ 2 lines × 42) when splitting source sentences into word-timed cues
+  max_duration: 6.0      # seconds per cue
+  min_duration: 1.0      # cues shorter than this are merged into the previous one when the text fits
+  burn_style: "FontName=Arial,FontSize=22,Outline=2,Shadow=0,MarginV=28"   # ffmpeg subtitles force_style for --burn-subtitles
+```
+
+README: một câu "source subtitles are split into word-timed cues (≤ 2 lines, ≤ 6 s) — tune `subtitles.max_chars/max_duration`".
+
+- [ ] **Step 6: Chạy test, commit**
+
+Run: `uv run python -m pytest -q` → toàn bộ pass (+7).
+
+```bash
+git add pipeline/transcriber.py pipeline/captions.py pipeline/subtitles.py pipeline/orchestrator.py pipeline/merger.py resume_from_segments.py config/default.yaml README.md tests/test_subtitles_cues.py tests/test_transcriber_words.py tests/test_orchestrator_subtitles.py
+git commit -m "feat(subtitles): word-timed cues (≤2 lines, ≤6 s) for source subtitles; burn style"
+```
