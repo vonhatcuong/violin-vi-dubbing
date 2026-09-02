@@ -162,6 +162,10 @@ yaml.safe_dump(cfg, open("/workspace/config_gpu.yaml", "w"), allow_unicode=True,
 EOF
 ```
 
+Kích thước file ra: preset mặc định `merge_video.preset: ultrafast, crf: 23` cho bitrate cao (~1,6 Mbps ở 640×480,
+~3,6 Mbps ở 1080p). Để file nhẹ hơn 3–4 lần mà tốc độ gần như không đổi, đặt trong override:
+`merge_video.crf: 26` và `merge_video.preset: veryfast`.
+
 Các khóa hay chỉnh: `voices.default_male/female`, `voices.speaker_voices`, `fit.sec_per_syllable`
 (đo lại bằng `scripts/calibrate_voice.py --voice "<tên>" --config /workspace/config_gpu.yaml`;
 Phạm Tuyên 0.227, Ngọc Huyền 0.230, Thanh Bình 0.230 s/âm tiết), `translation.batch_size`
@@ -234,12 +238,25 @@ Lần gọi Ollama đầu tiên sau khi idle > 30 phút tốn thêm 20–40 s n�
 
 ## 6. Copy kết quả về máy cá nhân
 
+Mạng Vast.ai → máy cá nhân chỉ ~1 MB/s, nên nén trước trên server (NVENC, giữ độ phân giải nhưng tối đa 720p),
+rồi chỉ kéo bản nén:
+
+```bash
+# trên server: ~1–2 phút cho 40 phút video; ffprobe để chắc file hoàn chỉnh trước khi copy
+ffmpeg -hide_banner -loglevel error -y -hwaccel cuda -i <tên>_vi.mp4 -vf "scale=-2:'min(720,ih)'" \
+  -c:v h264_nvenc -preset p4 -cq 30 -c:a aac -b:a 96k <tên>_vi_720p.mp4 && ffprobe -v error -show_entries format=duration -of csv=p=0 <tên>_vi_720p.mp4
+```
+
 ```bash
 # từ máy Mac
 D=~/…/violin/output/e2e_server/<tên>; mkdir -p "$D"
-rsync -a -e "ssh -p <port>" root@<ip>:/workspace/out_<tên>/<tên>_vi.mp4 \
+rsync -a --partial -e "ssh -p <port>" root@<ip>:/workspace/out_<tên>/<tên>_vi_720p.mp4 \
   :/workspace/out_<tên>/<tên>_vi.srt :/workspace/out_<tên>/<tên>_vi.fit.units.json "$D/"
 ```
+
+Chạy hàng loạt (playlist): script mẫu chạy tuần tự, bỏ qua bài đã có `DONE`, tải từng video bằng yt-dlp và ghi
+`batch.log` — xem `/workspace/batch_18_06.sh` trên server tham chiếu (khung: vòng `for id in $IDS`, `yt-dlp` →
+`main.py` → `touch DONE`). Kết hợp với một vòng lặp rsync trên máy cá nhân chỉ kéo thư mục có `DONE`.
 
 ## 7. Chuyển sang server mới: sao lưu gì, tải lại gì
 
