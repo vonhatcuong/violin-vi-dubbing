@@ -52,6 +52,12 @@ tts:
   tail_silence_ms: 120              # (ms) silence after segments ending in a comma / mid-clause break (keeps speech flowing)
   sentence_tail_silence_ms: 250     # (ms) silence after a sentence-ending mark (period/!?/。！？) — longer to feel natural
 
+# ── 3b. Voice bank (fixed voices for zero-shot local TTS, e.g. f5vi) ──
+voices:
+  bank: "assets/voices/vi"   # directory with catalog.yaml + reference WAVs
+  default_male: ""           # voice name; empty = first male in catalog
+  default_female: ""         # voice name; empty = first female in catalog
+
 # ── 4. Segment merging (combine Whisper fragments into sentences) ──
 merge:
   max_gap: 1.0           # seconds — merge if gap between segments is smaller
