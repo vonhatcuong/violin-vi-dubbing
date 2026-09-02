@@ -156,3 +156,24 @@ def make_synthesizer(language: str = "en", emotion: str | None = None):
         return backend.synthesize_segment(text, voice, out_path, client, language, speed, emotion)
 
     return _synth
+
+
+def make_batch_synthesizer(language: str = "en", emotion: str | None = None):
+    """Return `synth_batch(texts, voice, out_paths) -> out_paths`, or None when the backend cannot batch.
+
+    None when the active backend has no `synthesize_batch` (only vieneu does)
+    or when `vieneu.batch_tts` is disabled in config.
+    """
+    _ = emotion
+    provider = get_tts_provider()
+    backend = _backend(provider)
+    if not hasattr(backend, "synthesize_batch"):
+        return None
+    if provider == "vieneu" and not _conf.get().get("vieneu", {}).get("batch_tts", True):
+        return None
+    client = _make_client(provider)
+
+    def _synth_batch(texts: list[str], voice: str, out_paths: list[str]) -> list[str]:
+        return backend.synthesize_batch(texts, voice, out_paths, client, language)
+
+    return _synth_batch

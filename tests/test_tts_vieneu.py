@@ -18,12 +18,20 @@ class FakeEngine:
     def __init__(self, seconds=1.0):
         self.seconds = seconds
         self.calls: list[dict] = []
+        self.batch_calls: list[dict] = []
         self.enrolled: list[tuple[str, str]] = []
+
+    def _sine(self):
+        n = int(self.sample_rate * self.seconds)
+        return (0.3 * np.sin(2 * np.pi * 220 * np.arange(n) / self.sample_rate)).astype(np.float32)
 
     def infer(self, text, ref_audio=None, voice=None, **kwargs):
         self.calls.append(dict(text=text, ref_audio=ref_audio, voice=voice, **kwargs))
-        n = int(self.sample_rate * self.seconds)
-        return (0.3 * np.sin(2 * np.pi * 220 * np.arange(n) / self.sample_rate)).astype(np.float32)
+        return self._sine()
+
+    def infer_batch(self, texts, voice=None, **kwargs):
+        self.batch_calls.append(dict(texts=list(texts), voice=voice, **kwargs))
+        return [self._sine() for _ in texts]
 
     def add_voice(self, name, ref_audio, *, denoise=True):
         self.enrolled.append((name, str(ref_audio)))
@@ -115,3 +123,23 @@ def test_voice_name_given_as_nfd_resolves_to_preset(env, tmp_path):
     decomposed_voice = unicodedata.normalize("NFD", "Phạm Tuyên")
     tts_vieneu.synthesize_segment("x", decomposed_voice, str(tmp_path / "o.wav"), engine, language="vi")
     assert engine.calls[0]["voice"] == "Phạm Tuyên"
+
+
+def test_synthesize_batch_writes_all_files_with_one_engine_call(env, tmp_path):
+    engine = FakeEngine(seconds=1.0)
+    paths = [str(tmp_path / f"b{i}.wav") for i in range(3)]
+    out = tts_vieneu.synthesize_batch(["Câu một.", "Câu hai", "Câu ba."], "Phạm Tuyên", paths, engine, language="vi")
+    assert out == paths and len(engine.batch_calls) == 1 and engine.calls == []
+    assert engine.batch_calls[0]["voice"] == "Phạm Tuyên" and engine.batch_calls[0]["texts"][1] == "Câu hai"
+    durs = [sf.info(p).duration for p in paths]
+    assert durs[0] == pytest.approx(1.25, abs=0.03) and durs[1] == pytest.approx(1.12, abs=0.03)   # sentence tail 250 ms vs 120 ms
+    assert all(sf.info(p).samplerate == 44100 and sf.info(p).channels == 1 for p in paths)
+
+
+def test_make_batch_synthesizer_none_when_disabled(env, monkeypatch):
+    cfg = pipeline_config.get()
+    monkeypatch.setitem(cfg["models"], "tts", {"provider": "vieneu", "model": "vieneu-v3-turbo"})
+    monkeypatch.setattr(tts_vieneu, "get_shared_tts", lambda: FakeEngine())
+    assert callable(tts.make_batch_synthesizer(language="vi"))
+    monkeypatch.setitem(cfg["vieneu"], "batch_tts", False)
+    assert tts.make_batch_synthesizer(language="vi") is None

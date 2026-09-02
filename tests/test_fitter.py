@@ -109,3 +109,40 @@ def test_save_units_writes_json(tmp_path):
     fitter.save_units(units, p)
     data = json.loads(p.read_text())
     assert data["count"] == 3 and data["units"][0]["voice"] == "nam-1"
+
+
+def _fake_batch_synth(tmp_path):
+    calls = []
+
+    def synth_batch(texts, voice, paths):
+        calls.append((list(texts), voice, list(paths)))
+        for text, path in zip(texts, paths):
+            sf.write(path, np.zeros(int(44100 * 0.2 * len(text.split())), dtype=np.float32), 44100)
+        return list(paths)
+
+    return synth_batch, calls
+
+
+def test_fit_audio_uses_batch_synth_grouped_by_voice(tmp_path):
+    units = fitter.build_units(_segs(), [1.0, 5.15, 7.6], {"SPEAKER_00": "nam-1"}, "nam-1")
+    units[1].voice = "nu-1"
+    units[0].text = "a b c d e f g h"
+    synth, calls = _fake_synth(tmp_path)
+    synth_batch, bcalls = _fake_batch_synth(tmp_path)
+    fitter.fit_audio(units, synth, str(tmp_path), FCFG, synth_batch=synth_batch)
+    assert calls == []                                   # per-unit synth not used
+    assert [(c[1], len(c[0])) for c in bcalls] == [("nam-1", 2), ("nu-1", 1)]
+    assert units[0].strategy == "over" and units[0].over_s == pytest.approx(0.6, abs=0.02)
+    assert all(Path(u.tts_path).exists() for u in units)
+
+
+def test_fit_audio_batch_and_serial_agree(tmp_path):
+    a = fitter.build_units(_segs(), [2.6, 5.15, 7.6], {}, "nam-1")
+    b = fitter.build_units(_segs(), [2.6, 5.15, 7.6], {}, "nam-1")
+    synth, _ = _fake_synth(tmp_path / "s")
+    synth_batch, _ = _fake_batch_synth(tmp_path / "b")
+    (tmp_path / "s").mkdir(); (tmp_path / "b").mkdir()
+    fitter.fit_audio(a, synth, str(tmp_path / "s"), FCFG)
+    fitter.fit_audio(b, synth, str(tmp_path / "b"), FCFG, synth_batch=synth_batch)
+    assert [(round(u.tts_dur, 3), u.over_s, u.strategy) for u in a] == \
+        [(round(u.tts_dur, 3), u.over_s, u.strategy) for u in b]

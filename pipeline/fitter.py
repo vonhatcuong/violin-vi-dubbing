@@ -28,6 +28,7 @@ from .vi_text import count_syllables
 
 ShortenFn = Callable[[str, str, int, float], str]
 SynthFn = Callable[[str, str, str, float], str]
+BatchSynthFn = Callable[[list[str], str, list[str]], list[str]]
 
 
 @dataclass
@@ -119,20 +120,10 @@ def fit_text(units: list[DubUnit], shorten_fn: ShortenFn, fcfg: dict) -> None:
     print(f"      [fit] phase A: {shortened}/{len(units)} units shortened")
 
 
-def fit_audio(units: list[DubUnit], synth: SynthFn, out_dir: str, fcfg: dict) -> None:
-    """Phase B: synthesize each unit once at natural speed and measure it.
-
-    VieNeu has no speed control, so nothing is re-synthesized here; units
-    still longer than their budget are flagged (`over_s`) and the merger
-    absorbs the overrun (video slow-down ≤ 8 %, atempo ≤ 1.4, hard trim).
-    `fcfg` is accepted for interface symmetry with `fit_text`.
-    """
-    _ = fcfg
-    os.makedirs(out_dir, exist_ok=True)
+def _measure(units: list[DubUnit]) -> None:
+    """Read each unit's `tts_path` duration and flag units over their budget (`over_s`)."""
     over = 0
     for i, unit in enumerate(units):
-        path = str(Path(out_dir) / f"seg_{unit.seg_id:05d}.wav")
-        unit.tts_path = synth(unit.text, unit.voice, path, 1.0)
         unit.tts_dur = wav_duration(unit.tts_path)
         unit.over_s = round(max(0.0, unit.tts_dur - unit.budget_s), 3)
         if unit.over_s > 0:
@@ -140,6 +131,40 @@ def fit_audio(units: list[DubUnit], synth: SynthFn, out_dir: str, fcfg: dict) ->
             over += 1
         if (i + 1) % 10 == 0 or i + 1 == len(units):
             print(f"      [fit] phase B: {i + 1}/{len(units)} synthesized ({over} over budget)")
+
+
+def fit_audio(
+    units: list[DubUnit], synth: SynthFn, out_dir: str, fcfg: dict, synth_batch: BatchSynthFn | None = None,
+) -> None:
+    """Phase B: synthesize each unit once at natural speed and measure it.
+
+    VieNeu has no speed control, so nothing is re-synthesized here; units
+    still longer than their budget are flagged (`over_s`) and the merger
+    absorbs the overrun (video slow-down ≤ 8 %, atempo ≤ 1.4, hard trim).
+    `fcfg` is accepted for interface symmetry with `fit_text`.
+
+    When `synth_batch` is given, units are grouped by voice (first-appearance
+    order) and synthesized one `synth_batch` call per group (GPU static
+    batching); otherwise each unit is synthesized one at a time via `synth`.
+    Either way, measurement (`tts_dur`/`over_s`/`strategy`) is identical.
+    """
+    _ = fcfg
+    os.makedirs(out_dir, exist_ok=True)
+    if synth_batch is not None:
+        groups: dict[str, list[DubUnit]] = {}
+        for unit in units:
+            groups.setdefault(unit.voice, []).append(unit)
+        for voice, group in groups.items():
+            paths = [str(Path(out_dir) / f"seg_{u.seg_id:05d}.wav") for u in group]
+            out_paths = synth_batch([u.text for u in group], voice, paths)
+            for unit, path in zip(group, out_paths):
+                unit.tts_path = path
+            print(f"      [fit] phase B: batch {voice} {len(group)} units")
+    else:
+        for unit in units:
+            path = str(Path(out_dir) / f"seg_{unit.seg_id:05d}.wav")
+            unit.tts_path = synth(unit.text, unit.voice, path, 1.0)
+    _measure(units)
 
 
 def apply_units(units: list[DubUnit], segments: list[Segment]) -> tuple[list[Segment], list[str]]:

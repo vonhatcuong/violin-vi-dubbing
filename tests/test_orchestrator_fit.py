@@ -20,7 +20,7 @@ def test_fit_path_replaces_synthesize_and_keeps_sentence_units(monkeypatch):
         segments = [Segment(id=0, start=0.0, end=2.0, text="Hello. World.")]
         translated = [Segment(id=0, start=0.0, end=2.0, text="Chào. Thế giới.", source_text="Hello. World.")]
 
-        def fake_fit_audio(units, synth, out_dir, fcfg):
+        def fake_fit_audio(units, synth, out_dir, fcfg, synth_batch=None):
             for u in units:
                 u.tts_path, u.tts_dur = str(tts), 1.0
 
@@ -33,6 +33,7 @@ def test_fit_path_replaces_synthesize_and_keeps_sentence_units(monkeypatch):
              patch("pipeline.orchestrator.translate_segments", return_value=translated) as tr, \
              patch("pipeline.orchestrator.synthesize_segments") as synth_segments, \
              patch("pipeline.orchestrator.make_synthesizer", return_value=lambda *a: str(tts)), \
+             patch("pipeline.orchestrator.make_batch_synthesizer", return_value=None), \
              patch("pipeline.orchestrator.fitter.fit_text") as fit_text, \
              patch("pipeline.orchestrator.fitter.fit_audio", side_effect=fake_fit_audio) as fit_audio, \
              patch("pipeline.orchestrator._resolve_voice", return_value="nam-1"), \

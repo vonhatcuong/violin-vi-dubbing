@@ -74,6 +74,7 @@ vieneu:
   watermark: true            # SDK audio watermark (apply_watermark)
   normalize_numbers: false   # VieNeu's own normalizer already reads digits/percent/acronyms (verified on GPU spike); enable only for odd inputs
   loanwords: {}              # optional pronunciation map, e.g. {"GPU": "gi pi u"}
+  batch_tts: true            # use infer_batch (GPU static batching, ~6× faster TTS); ignored on CPU
 
 # ── 4. Segment merging (combine Whisper fragments into sentences) ──
 merge:

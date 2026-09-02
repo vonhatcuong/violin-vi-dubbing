@@ -29,7 +29,7 @@ from .subtitles import split_into_cues
 from .timemap import build_time_map
 from .transcriber import Segment, merge_continuous_segments, split_into_sentences, transcribe
 from .translator import shorten_segment, translate_segments
-from .tts import make_synthesizer, native_voices_for, synthesize_segments
+from .tts import make_batch_synthesizer, make_synthesizer, native_voices_for, synthesize_segments
 
 ProgressCallback = Callable[[int, str], None]
 CancelCallback = Callable[[], bool]
@@ -181,7 +181,8 @@ def dub_video(
 
             fitter.fit_text(units, _shorten, fit_cfg)
             synth = make_synthesizer(language=lang_code, emotion=style.tts_emotion)
-            fitter.fit_audio(units, synth, str(tts_dir), fit_cfg)
+            synth_batch = make_batch_synthesizer(language=lang_code, emotion=style.tts_emotion)
+            fitter.fit_audio(units, synth, str(tts_dir), fit_cfg, synth_batch=synth_batch)
             translated, tts_paths = fitter.apply_units(units, translated)
             fitter.save_units(units, Path(output_video_path).with_suffix(".fit.units.json"))
             _persist_segments(translated, output_video_path, "fitted")

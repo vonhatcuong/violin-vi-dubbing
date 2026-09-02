@@ -135,6 +135,13 @@ def _prepare_text(text: str, language: str, cfg: dict[str, Any]) -> str:
     return normalize_for_tts(text, use_vinorm=False, loanwords=cfg.get("loanwords") or {}, lowercase=False)
 
 
+def _tail_ms(text: str, tcfg: dict[str, Any]) -> float:
+    """Tail silence duration for one text: sentence-end punctuation gets the longer pause."""
+    if text.rstrip().endswith((".", "!", "?", "。", "！", "？")):
+        return tcfg.get("sentence_tail_silence_ms", tcfg.get("tail_silence_ms", 0))
+    return tcfg.get("tail_silence_ms", 0)
+
+
 def synthesize_segment(
     text: str,
     voice: str,
@@ -163,12 +170,38 @@ def synthesize_segment(
     _write_44k_mono(wav, int(getattr(engine, "sample_rate", 48000)), output_path)
 
     tcfg = _conf.get().get("tts", {})
-    if text.rstrip().endswith((".", "!", "?", "。", "！", "？")):
-        tail_ms = tcfg.get("sentence_tail_silence_ms", tcfg.get("tail_silence_ms", 0))
-    else:
-        tail_ms = tcfg.get("tail_silence_ms", 0)
-    _append_silence(output_path, tail_ms)
+    _append_silence(output_path, _tail_ms(text, tcfg))
     return output_path
+
+
+def synthesize_batch(
+    texts: list[str], voice: str, output_paths: list[str], client: Any, language: str = "vi",
+) -> list[str]:
+    """Synthesize many segments in one engine call (GPU static batching); same output format as synthesize_segment."""
+    if len(texts) != len(output_paths):
+        raise ValueError("texts and output_paths must have the same length")
+    if not texts:
+        return []
+    engine = client if client is not None else get_shared_tts()
+    cfg = _vcfg()
+    prepared = [_prepare_text(t, language, cfg) for t in texts]
+    with _LOCK:
+        name = _resolve_voice(engine, voice)
+        wavs = engine.infer_batch(
+            prepared,
+            voice=name,
+            temperature=float(cfg.get("temperature", 0.8)),
+            top_k=int(cfg.get("top_k", 25)),
+            top_p=float(cfg.get("top_p", 0.95)),
+            repetition_penalty=float(cfg.get("repetition_penalty", 1.2)),
+            apply_watermark=bool(cfg.get("watermark", True)),
+        )
+    sr = int(getattr(engine, "sample_rate", 48000))
+    tcfg = _conf.get().get("tts", {})
+    for text, wav, path in zip(texts, wavs, output_paths):
+        _write_44k_mono(wav, sr, path)
+        _append_silence(path, _tail_ms(text, tcfg))
+    return list(output_paths)
 
 
 def synthesize_segments(
