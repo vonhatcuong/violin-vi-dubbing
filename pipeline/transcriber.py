@@ -211,8 +211,16 @@ def _rebuild(words: list[list], template: "Segment") -> "Segment":
                    source_text=template.source_text, words=[list(w) for w in words])
 
 
-def _split_one(seg: "Segment", max_s: float, min_piece: float) -> list["Segment"]:
-    """Recursively split *seg* at the best clause boundary until every piece fits within max_s."""
+def _split_one(seg: "Segment", max_s: float, min_piece: float, long_gap: float) -> list["Segment"]:
+    """Recursively split *seg* at the best clause boundary until every piece fits within max_s.
+
+    A silence gap of at least *long_gap* seconds between two consecutive words is
+    always a valid cut (no min_piece requirement on either side) and outranks
+    clause punctuation; among long-gap candidates the largest gap wins, then the
+    one nearest the segment's midpoint. Otherwise punctuation is preferred over
+    an ordinary word gap, both still requiring both resulting pieces to be at
+    least min_piece seconds long.
+    """
     words = seg.words or []
     if (seg.end - seg.start) <= max_s or len(words) < 2:
         return [seg]
@@ -220,24 +228,30 @@ def _split_one(seg: "Segment", max_s: float, min_piece: float) -> list["Segment"
     mid = (float(words[0][1]) + float(words[-1][2])) / 2.0
     cands = []
     for i in range(1, n):
+        gap = float(words[i][1]) - float(words[i - 1][2])
+        dist = abs(float(words[i][1]) - mid)
+        if gap >= long_gap:
+            cands.append((0, -gap, dist, i))
+            continue
         left_dur = float(words[i - 1][2]) - float(words[0][1])
         right_dur = float(words[-1][2]) - float(words[i][1])
         if left_dur < min_piece or right_dur < min_piece:
             continue
         punct = str(words[i - 1][0]).endswith(_CLAUSE_END)
-        gap = float(words[i][1]) - float(words[i - 1][2])
-        dist = abs(float(words[i][1]) - mid)
-        cands.append((0 if punct else 1, -gap if not punct else 0.0, dist, i))
+        cands.append((1, 0.0, dist, i) if punct else (2, -gap, dist, i))
     if not cands:
         return [seg]
     cands.sort()
     i = cands[0][3]
     left, right = _rebuild(words[:i], seg), _rebuild(words[i:], seg)
-    return _split_one(left, max_s, min_piece) + _split_one(right, max_s, min_piece)
+    return _split_one(left, max_s, min_piece, long_gap) + _split_one(right, max_s, min_piece, long_gap)
 
 
-def split_long_segments(segments: list["Segment"], max_seconds: float, min_piece_seconds: float = 2.5) -> list["Segment"]:
-    """Split sentences longer than *max_seconds* at clause punctuation (nearest the middle) or the largest word gap.
+def split_long_segments(segments: list["Segment"], max_seconds: float, min_piece_seconds: float = 2.5,
+                         long_gap_seconds: float = 2.0) -> list["Segment"]:
+    """Split sentences longer than *max_seconds* at clause punctuation (nearest the middle), the
+    largest word gap, or — always, regardless of resulting piece length — a silence gap of at
+    least *long_gap_seconds*.
 
     Only segments carrying word-level timestamps can be split. Applied after
     merging so a single ASR "sentence" glued from run-on lecture speech is
@@ -247,7 +261,7 @@ def split_long_segments(segments: list["Segment"], max_seconds: float, min_piece
         return segments
     out: list[Segment] = []
     for seg in segments:
-        out.extend(_split_one(seg, max_seconds, min_piece_seconds))
+        out.extend(_split_one(seg, max_seconds, min_piece_seconds, long_gap_seconds))
     for i, s in enumerate(out):
         s.id = i
     return out
