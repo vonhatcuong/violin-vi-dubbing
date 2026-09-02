@@ -149,3 +149,10 @@ Chạy tuần tự, giải phóng model giữa các stage: Demucs (~2 GB) → un
 
 ### Rủi ro chính
 1. F5-vi trên MPS chậm (1–7× RTF): dev trên clip ngắn, batch trên GPU. 2. `fix_duration`/speed > 1.15 làm giọng méo → dựa vào rút gọn dịch là chính. 3. Số/viết tắt/từ mượn tiếng Anh làm sai dấu → `vi_text` + từ điển loanword tuỳ chỉnh trong config. 4. License CC-BY-NC-SA của F5-vi: chỉ dùng cá nhân/nghiên cứu (user đã chọn). 5. pyannote cần HF token 1 lần (vẫn chạy local).
+
+## Amendment 2026-09-02 (quyết định của user sau khi có server GPU)
+
+- **LLM dịch**: Google **Gemma 4** thay cho Qwen 3.5 — Mac: `gemma4:12b-mlx` (Ollama MLX, ~7,5 GB), GPU 24 GB: `gemma4:31b` (Q4, ~19 GB). Cùng client OpenAI-compatible, chỉ đổi `models.translation.model`.
+- **TTS**: **VieNeu-TTS v3 Turbo** (`pnnbao-ump/VieNeu-TTS-v3-Turbo`, Apache-2.0, 48 kHz, 20 giọng preset Bắc/Trung/Nam, clone giọng từ clip 3–8 s, code-switching Anh–Việt) thay cho F5-TTS-Vietnamese. SDK `vieneu` 3.3.0: trên CPU/Apple Silicon chạy ONNX int8 không cần torch (~7× realtime), trên CUDA chạy PyTorch batch (`torch==2.8.0` cu128 + `transformers==4.57.6`). `infer()` không có tham số tốc độ → fitter chỉ đo và ghi `over_s`; merger (video ≤ 8 %, atempo ≤ 1.4, hard trim) hấp thụ phần dư. Giọng cố định mặc định: `Phạm Tuyên` (nam, Bắc) / `Ngọc Huyền` (nữ, Bắc); voice bank chỉ còn dùng cho clone tuỳ chọn. Hệ quả: license sạch cho thương mại, Mac chạy được TTS nhanh.
+- **`vinorm` bị loại** (import module `imp` đã xoá ở Python 3.12); chuẩn hoá text dùng `pipeline/vi_text.py` (num2words + quy tắc nghìn/thập phân/âm).
+- **Hạ tầng**: spike và E2E chạy trên server Vast.ai 2× RTX 3090 (Ollama trên GPU 1, ASR/TTS trên GPU 0); Mac giữ nhẹ theo yêu cầu user (chỉ chạy test unit).

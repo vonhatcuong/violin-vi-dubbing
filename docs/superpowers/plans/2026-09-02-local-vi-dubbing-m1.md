@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Chạy `uv run main.py lecture.mp4 out_vi.mp4 --language Vietnamese --config config/local_mac.yaml` hoàn toàn offline: faster-whisper → Ollama local → F5-TTS-Vietnamese → vòng lặp fit-duration → merger sẵn có, với giọng Việt cố định từ voice bank.
+**Goal:** Chạy `uv run main.py lecture.mp4 out_vi.mp4 --language Vietnamese --config config/local_mac.yaml` hoàn toàn offline: faster-whisper → Ollama local (Gemma 4) → VieNeu-TTS v3 Turbo → vòng lặp fit-duration → merger sẵn có, với giọng Việt cố định (preset VieNeu hoặc clip trong voice bank).
 
-**Architecture:** Giữ nguyên `dub_video` 5 bước của violin; thêm backend TTS `f5vi`, provider LLM local (`ollama` localhost / `openai_compat`), module `fitter` chèn giữa dịch và merge (ước lượng theo âm tiết → rút gọn bằng LLM → TTS đo → re-synth với speed ≤ 1.15 → mượn pause bằng cách kéo `seg.end`), phần dư giao merger (video ≤ 8 %, atempo ≤ 1.4, hard trim). Mọi tính năng mới tắt trong `config/default.yaml`; bật trong `config/local_mac.yaml`.
+**Architecture:** Giữ nguyên `dub_video` 5 bước của violin; thêm backend TTS `vieneu`, provider LLM local (`ollama` localhost / `openai_compat`), module `fitter` chèn giữa dịch và merge (ước lượng theo âm tiết → rút gọn bằng LLM → TTS đo → mượn pause bằng cách kéo `seg.end`), phần dư giao merger (video ≤ 8 %, atempo ≤ 1.4, hard trim). VieNeu không có tham số tốc độ nên mọi nén audio nằm ở merger. Mọi tính năng mới tắt trong `config/default.yaml`; bật trong `config/local_mac.yaml`.
 
-**Tech Stack:** Python 3.13 + uv, ffmpeg, faster-whisper (đã có), `openai` SDK trỏ Ollama `http://localhost:11434/v1` (model `qwen3.5:9b-mlx`), `f5-tts` 1.1.x (PyTorch, MPS/CUDA) + checkpoint `hynt/F5-TTS-Vietnamese-ViVoice`, `vinorm` 2.0.7 (fallback `num2words`), `soundfile`, `pyyaml`, pytest.
+**Tech Stack:** Python 3.13 + uv, ffmpeg, faster-whisper (đã có), `openai` SDK trỏ Ollama `http://localhost:11434/v1` (Mac: `gemma4:12b-mlx`; GPU: `gemma4:31b`), `vieneu` 3.3.0 (VieNeu-TTS v3 Turbo, Apache-2.0, 48 kHz; ONNX/CPU torch-free trên Mac, PyTorch batch trên CUDA với `torch==2.8.0` cu128 + `transformers==4.57.6`), `num2words` (chuẩn hoá số), `soundfile`, `pyyaml`, pytest.
 
 **Spec:** `docs/superpowers/specs/2026-09-02-local-vi-dubbing-design.md`
 
@@ -15,8 +15,9 @@
 - Python `>=3.10` (repo chạy 3.13 qua `.python-version`); quản lý bằng `uv`; chạy test bằng `uv run python -m pytest -q` (KHÔNG `uv run pytest`, pytest hệ thống 3.14 không thấy `pipeline`).
 - 35 test hiện có phải pass nguyên trạng sau mỗi task; mọi khoá config mới có mặc định = tắt/an toàn trong `config/default.yaml`.
 - Không gọi dịch vụ mạng trong đường local: không Edge-TTS, không Ollama Cloud, không Together/OpenAI khi dùng `config/local_mac.yaml`.
-- Không bao giờ làm chậm giọng (speed < 1.0); `fit.max_tts_speed` = 1.15; merger giữ `speed_clamp_min: 0.92` (video ≤ 8 %), `max_audio_speedup: 1.4`.
-- F5-TTS-Vietnamese-ViVoice: CC-BY-NC-SA-4.0 — chỉ dùng cá nhân/nghiên cứu; model nhận text **lowercase**, NFC.
+- Không bao giờ làm chậm giọng; merger giữ `speed_clamp_min: 0.92` (video ≤ 8 %), `max_audio_speedup: 1.4`. VieNeu `infer()` không có tham số speed → fitter chỉ đo và ghi `over_s`, không re-synth.
+- VieNeu-TTS v3 Turbo (`pnnbao-ump/VieNeu-TTS-v3-Turbo`, Apache-2.0, dùng thương mại được): text NFC, **giữ nguyên hoa/thường và từ tiếng Anh** (model hỗ trợ code-switching), số viết thành chữ trước (bảo hiểm); output float32 @ 48 kHz; giọng = preset name (20 giọng Bắc/Trung/Nam) hoặc clip clone qua `add_voice`.
+- `vinorm` KHÔNG dùng (import `imp`, hỏng trên Python ≥ 3.12); chỉ dùng fallback trong `vi_text`.
 - Style code: giữ pattern module backend TTS như `pipeline/tts_supertonic.py` (hàm module-level, shared instance + lock), config qua `pipeline.config.get()`, in tiến độ bằng `print("      …")`.
 - Commit sau mỗi task, message tiếng Anh theo prefix `feat|fix|test|docs|chore(scope):`, kết thúc bằng
   `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` và `Claude-Session: https://claude.ai/code/session_01HjBXyTtKKvNCAwEkCRHgNs`.
@@ -35,11 +36,12 @@
 | `pipeline/devices.py` (create) | `pick_device()`, `free_memory()` |
 | `pipeline/vi_text.py` (create) | `normalize_for_tts()`, `count_syllables()` |
 | `pipeline/voices.py` (create) + `assets/voices/vi/catalog.yaml` (create) + `scripts/make_ref_clip.py` (create) | voice bank giọng Việt cố định (clip mẫu + ref text) |
-| `pipeline/tts_f5vi.py` (create), `pipeline/tts.py` (modify) | backend F5-TTS-vi; `make_synthesizer()` cho fitter |
+| `pipeline/tts_vieneu.py` (create), `pipeline/tts.py` (modify), `pipeline/vi_text.py` (modify: kwarg `lowercase`) | backend VieNeu-TTS v3 Turbo; `make_synthesizer()` cho fitter |
 | `pipeline/fitter.py` (create) | `DubUnit`, `compute_slots`, `fit_text`, `fit_audio`, `apply_units`, `save_units` |
 | `pipeline/merger.py` (modify) | `merge_video.hard_trim` (cắt + fade thay freeze) |
-| `pipeline/orchestrator.py`, `main.py`, `config/default.yaml`, `config/local_mac.yaml`, `config/local_gpu.yaml` (create), `resume_from_segments.py` (modify) | nối stage fit vào pipeline, cờ CLI, preset |
-| `tests/test_translator_segments.py`, `tests/test_llm_client_local.py`, `tests/test_vi_text.py`, `tests/test_devices.py`, `tests/test_voices.py`, `tests/test_tts_f5vi.py`, `tests/test_transcriber_min_duration.py`, `tests/test_fitter.py`, `tests/test_merger_hard_trim.py`, `tests/test_orchestrator_fit.py` (create) | test theo từng task |
+| `pipeline/orchestrator.py`, `main.py`, `config/default.yaml`, `config/local_mac.yaml`, `config/local_gpu.yaml` (create), `resume_from_segments.py` (modify) | nối stage fit vào pipeline, cờ CLI, preset Gemma 4 + VieNeu |
+| `pyproject.toml` (modify, Task 12) | extras `local-mac` / `local-gpu` với `vieneu` |
+| `tests/test_translator_segments.py`, `tests/test_llm_client_local.py`, `tests/test_vi_text.py`, `tests/test_devices.py`, `tests/test_voices.py`, `tests/test_tts_vieneu.py`, `tests/test_transcriber_min_duration.py`, `tests/test_fitter.py`, `tests/test_merger_hard_trim.py`, `tests/test_orchestrator_fit.py` (create) | test theo từng task |
 
 ---
 
@@ -976,24 +978,33 @@ git commit -m "feat(voices): fixed Vietnamese voice bank, device helpers and ref
 
 ---
 
-### Task 6: Backend TTS `f5vi` + `tts.make_synthesizer()`
+### Task 6: Backend TTS `vieneu` (VieNeu-TTS v3 Turbo) + `tts.make_synthesizer()`
 
 **Files:**
-- Create: `pipeline/tts_f5vi.py`
+- Create: `pipeline/tts_vieneu.py`
 - Modify: `pipeline/tts.py:25-38, 56-73` và thêm `make_synthesizer`
-- Modify: `config/default.yaml` (khối `f5vi`)
-- Modify: `pyproject.toml` (extras)
-- Test: `tests/test_tts_f5vi.py`
+- Modify: `pipeline/vi_text.py` (thêm kwarg `lowercase: bool = True` cho `normalize_for_tts`)
+- Modify: `config/default.yaml` (khối `vieneu`; đổi mặc định `voices.default_male/default_female`)
+- Test: `tests/test_tts_vieneu.py`, thêm 1 test vào `tests/test_vi_text.py`
 
 **Interfaces:**
-- Consumes: `voices.get_voice(name) -> Voice`, `vi_text.normalize_for_tts`, `devices.pick_device`, `tts_supertonic._append_silence(path, ms)`.
-- Produces (module `tts_f5vi`): `get_shared_tts() -> F5ViEngine`, `F5ViEngine.synthesize(text, ref_wav: str, ref_text: str, speed: float, fix_duration: float | None) -> tuple[np.ndarray, int]`, `synthesize_segment(text, voice, output_path, client, language="vi", speed=None, emotion=None) -> str`, `synthesize_segments(segments, voice, output_dir, client, language, voice_map, tracker, speed, emotion) -> list[str]`, `native_voices_for`, `all_voices`, `voice_descriptions`, `unload()`.
-- Produces (module `tts`): `make_synthesizer(language: str, emotion: str | None = None) -> Callable[[str, str, str, float], str]` — `synth(text, voice, out_path, speed) -> out_path`, dùng bởi fitter (Task 9).
-- Config `f5vi`: `model_dir, ckpt_file, vocab_file, model_name, vocoder, device, nfe_step, cfg_strength, seed, use_vinorm, loanwords`.
+- Consumes: `voices.load_catalog()`/`voices.get_voice(name)` (voice bank — chỉ dùng khi clone giọng), `vi_text.normalize_for_tts(text, *, use_vinorm=None, loanwords=None, lowercase=True)`, `tts_supertonic._append_silence(path, ms)`.
+- Produces (module `tts_vieneu`): `get_shared_tts() -> Any` (instance `vieneu.Vieneu`), `synthesize_segment(text, voice, output_path, client, language="vi", speed=None, emotion=None) -> str`, `synthesize_segments(segments, voice, output_dir, client, language, voice_map, tracker, speed, emotion) -> list[str]`, `native_voices_for(language_code) -> [male, female]` (đọc `voices.default_male/default_female`, mặc định `"Phạm Tuyên"`/`"Ngọc Huyền"`), `all_voices()`, `voice_descriptions()`, `unload()`.
+- Voice = tên preset của VieNeu (20 giọng: Adam, Phạm Tuyên, Minh Đức, Thanh Bình, Ngọc Huyền, Trúc Ly, Đoan Trang, Ngọc Linh, Mai Anh, Quỳnh Anh, Quang Sơn, Ngọc Trân, Xuân Vĩnh, Thái Sơn, Minh Triết, Đức Trí, Thục Đoan, Thùy Dung, Mỹ Duyên, Kim Thanh) HOẶC tên giọng trong voice bank → enroll một lần bằng `engine.add_voice(name, ref_wav)` rồi dùng theo tên.
+- Produces (module `tts`): `make_synthesizer(language: str, emotion: str | None = None) -> Callable[[str, str, str, float], str]` — `synth(text, voice, out_path, speed) -> out_path`; VieNeu bỏ qua `speed` (giữ tham số để fitter có interface ổn định).
+- SDK `vieneu` 3.3.0 (đã xác minh chữ ký): `Vieneu(mode="v3turbo", device="auto", dtype="auto", backend="auto"|"onnx"|"pytorch", precision="int8"|"fp32", threads=0, max_batch_size=32)`; `engine.infer(text, ref_audio=None, voice=None, denoise=True, temperature=0.8, top_k=25, top_p=0.95, repetition_penalty=1.2, max_chars=256, silence_p=0.15, apply_watermark=True, batch_size=None) -> np.ndarray` float32 @ `engine.sample_rate` (48 000); `engine.add_voice(name, ref_audio, *, denoise=True)`; `engine.list_preset_voices() -> [(label, voice_id), ...]`.
+- Config `vieneu`: `backend, precision, device, threads, max_batch_size, temperature, top_k, top_p, repetition_penalty, watermark, normalize_numbers, loanwords`.
 
 - [ ] **Step 1: Viết test thất bại**
 
-`tests/test_tts_f5vi.py`:
+Thêm vào `tests/test_vi_text.py`:
+
+```python
+def test_lowercase_can_be_disabled():
+    assert vi_text.normalize_for_tts("Dùng GPU và 2 CPU", use_vinorm=False, lowercase=False) == "Dùng GPU và hai CPU"
+```
+
+`tests/test_tts_vieneu.py`:
 
 ```python
 from pathlib import Path
@@ -1004,25 +1015,33 @@ import soundfile as sf
 import yaml
 
 from pipeline import config as pipeline_config
-from pipeline import tts, tts_f5vi
+from pipeline import tts, tts_vieneu
 
 
 class FakeEngine:
-    """Records calls; returns `seconds` of 24 kHz sine per call."""
+    """Mimics vieneu.Vieneu: records calls; returns `seconds` of 48 kHz sine per infer."""
+
+    sample_rate = 48000
 
     def __init__(self, seconds=1.0):
         self.seconds = seconds
         self.calls: list[dict] = []
+        self.enrolled: list[tuple[str, str]] = []
 
-    def synthesize(self, text, ref_wav, ref_text, speed=1.0, fix_duration=None):
-        self.calls.append(dict(text=text, ref_wav=ref_wav, ref_text=ref_text, speed=speed, fix_duration=fix_duration))
-        sr = 24000
-        n = int(sr * self.seconds / speed)
-        return (0.3 * np.sin(2 * np.pi * 220 * np.arange(n) / sr)).astype(np.float32), sr
+    def infer(self, text, ref_audio=None, voice=None, **kwargs):
+        self.calls.append(dict(text=text, ref_audio=ref_audio, voice=voice, **kwargs))
+        n = int(self.sample_rate * self.seconds)
+        return (0.3 * np.sin(2 * np.pi * 220 * np.arange(n) / self.sample_rate)).astype(np.float32)
+
+    def add_voice(self, name, ref_audio, *, denoise=True):
+        self.enrolled.append((name, str(ref_audio)))
+
+    def list_preset_voices(self):
+        return [("Phạm Tuyên — Bắc, Natural", "Phạm Tuyên"), ("Ngọc Huyền — Bắc, Natural", "Ngọc Huyền")]
 
 
 @pytest.fixture
-def bank(tmp_path, monkeypatch):
+def env(tmp_path, monkeypatch):
     sr = 24000
     sf.write(tmp_path / "nam-1.wav", np.zeros(sr * 5, dtype=np.float32), sr)
     (tmp_path / "catalog.yaml").write_text(yaml.safe_dump({"voices": [
@@ -1031,72 +1050,97 @@ def bank(tmp_path, monkeypatch):
     monkeypatch.setitem(cfg["voices"], "bank", str(tmp_path))
     monkeypatch.setitem(cfg["tts"], "sentence_tail_silence_ms", 250)
     monkeypatch.setitem(cfg["tts"], "tail_silence_ms", 120)
-    monkeypatch.setitem(cfg["f5vi"], "loanwords", {"GPU": "gi pi u"})
-    monkeypatch.setitem(cfg["f5vi"], "use_vinorm", False)
+    monkeypatch.setitem(cfg["vieneu"], "loanwords", {})
+    monkeypatch.setitem(cfg["vieneu"], "normalize_numbers", True)
+    monkeypatch.setattr(tts_vieneu, "_ENROLLED", set())
     return tmp_path
 
 
-def test_synthesize_segment_writes_44k_mono_with_sentence_tail(bank, tmp_path):
+def test_synthesize_segment_writes_44k_mono_with_sentence_tail(env, tmp_path):
     engine = FakeEngine(seconds=1.0)
-    out = tts_f5vi.synthesize_segment("Xin chào.", "nam-1", str(tmp_path / "o.wav"), engine, language="vi")
+    out = tts_vieneu.synthesize_segment("Xin chào.", "Phạm Tuyên", str(tmp_path / "o.wav"), engine, language="vi")
     info = sf.info(out)
     assert info.samplerate == 44100 and info.channels == 1
     assert abs(info.duration - 1.25) < 0.03
 
 
-def test_text_is_normalized_and_ref_from_bank(bank, tmp_path):
+def test_preset_voice_is_passed_by_name_without_enrollment(env, tmp_path):
     engine = FakeEngine()
-    tts_f5vi.synthesize_segment("Có 2 GPU", "nam-1", str(tmp_path / "o.wav"), engine, language="vi")
-    call = engine.calls[0]
-    assert call["text"] == "có hai gi pi u"
-    assert call["ref_text"] == "xin chào các bạn"
-    assert Path(call["ref_wav"]).name == "nam-1.wav"
+    tts_vieneu.synthesize_segment("Một câu", "Phạm Tuyên", str(tmp_path / "o.wav"), engine, language="vi")
+    assert engine.calls[0]["voice"] == "Phạm Tuyên" and engine.calls[0]["ref_audio"] is None
+    assert engine.enrolled == []
+    assert engine.calls[0]["temperature"] == pytest.approx(0.8)
 
 
-def test_speed_is_forwarded_and_shortens_audio(bank, tmp_path):
-    engine = FakeEngine(seconds=2.0)
-    out = tts_f5vi.synthesize_segment("Một câu", "nam-1", str(tmp_path / "o.wav"), engine, language="vi", speed=1.15)
-    assert engine.calls[0]["speed"] == pytest.approx(1.15)
-    assert sf.info(out).duration < 2.0
+def test_bank_voice_is_enrolled_once_then_used_by_name(env, tmp_path):
+    engine = FakeEngine()
+    tts_vieneu.synthesize_segment("Câu một", "nam-1", str(tmp_path / "a.wav"), engine, language="vi")
+    tts_vieneu.synthesize_segment("Câu hai", "nam-1", str(tmp_path / "b.wav"), engine, language="vi")
+    assert len(engine.enrolled) == 1 and engine.enrolled[0][0] == "nam-1"
+    assert Path(engine.enrolled[0][1]).name == "nam-1.wav"
+    assert [c["voice"] for c in engine.calls] == ["nam-1", "nam-1"]
 
 
-def test_make_synthesizer_uses_f5vi_backend(bank, tmp_path, monkeypatch):
+def test_numbers_are_spelled_out_and_case_is_kept(env, tmp_path):
+    engine = FakeEngine()
+    tts_vieneu.synthesize_segment("Có 23 GPU mới.", "Phạm Tuyên", str(tmp_path / "o.wav"), engine, language="vi")
+    assert engine.calls[0]["text"] == "Có hai mươi ba GPU mới."
+
+
+def test_unknown_voice_raises_helpful_error(env, tmp_path):
+    engine = FakeEngine()
+    with pytest.raises(KeyError, match="Phạm Tuyên"):
+        tts_vieneu.synthesize_segment("x", "Giọng Không Có", str(tmp_path / "o.wav"), engine, language="vi")
+
+
+def test_native_voices_come_from_config_defaults(env):
+    assert tts_vieneu.native_voices_for("vi") == ["Phạm Tuyên", "Ngọc Huyền"]
+
+
+def test_make_synthesizer_uses_vieneu_backend(env, tmp_path, monkeypatch):
     cfg = pipeline_config.get()
-    monkeypatch.setitem(cfg["models"], "tts", {"provider": "f5vi", "model": "f5-tts-vi"})
+    monkeypatch.setitem(cfg["models"], "tts", {"provider": "vieneu", "model": "vieneu-v3-turbo"})
     engine = FakeEngine(seconds=0.5)
-    monkeypatch.setattr(tts_f5vi, "get_shared_tts", lambda: engine)
+    monkeypatch.setattr(tts_vieneu, "get_shared_tts", lambda: engine)
     synth = tts.make_synthesizer(language="vi")
-    out = synth("Xin chào", "nam-1", str(tmp_path / "s.wav"), 1.0)
+    out = synth("Xin chào", "Phạm Tuyên", str(tmp_path / "s.wav"), 1.0)
     assert Path(out).exists() and len(engine.calls) == 1
-
-
-def test_native_voices_come_from_bank(bank):
-    assert tts_f5vi.native_voices_for("vi") == ["nam-1", "nam-1"]
 ```
 
 - [ ] **Step 2: Chạy test, xác nhận thất bại**
 
-Run: `uv run python -m pytest tests/test_tts_f5vi.py -v`
-Expected: FAIL — `ModuleNotFoundError: pipeline.tts_f5vi`.
+Run: `uv run python -m pytest tests/test_tts_vieneu.py tests/test_vi_text.py -v`
+Expected: FAIL — `ModuleNotFoundError: pipeline.tts_vieneu` và `TypeError: normalize_for_tts() got an unexpected keyword argument 'lowercase'`.
 
-- [ ] **Step 3: Viết `pipeline/tts_f5vi.py`**
+- [ ] **Step 3: Thêm `lowercase` vào `pipeline/vi_text.py`**
+
+Chữ ký: `def normalize_for_tts(text, *, use_vinorm=None, loanwords=None, lowercase=True) -> str`; thay dòng `text = text.lower()` bằng:
 
 ```python
-"""Local Vietnamese TTS backend: F5-TTS (PyTorch) + hynt/F5-TTS-Vietnamese-ViVoice.
+    if lowercase:
+        text = text.lower()
+```
 
-Runs on CUDA / Apple MPS / CPU. Model files live in `f5vi.model_dir`
-(default ~/.cache/violin/f5vi): `model_last.pt` + `vocab.txt` (the HF repo's
-`config.json` IS the vocab — rename it). License CC-BY-NC-SA-4.0: personal /
-research use only.
+Cập nhật docstring module: "lowercase là tuỳ chọn (VieNeu giữ nguyên hoa/thường và từ tiếng Anh)".
 
-Fixed voices come from the voice bank (pipeline.voices): each voice is a
-reference clip + transcript; F5-TTS clones that timbre for every segment.
-Contract mirrors pipeline/tts_supertonic.py so pipeline/tts.py can dispatch.
+- [ ] **Step 4: Viết `pipeline/tts_vieneu.py`**
+
+```python
+"""Local Vietnamese TTS backend: VieNeu-TTS v3 Turbo via the `vieneu` SDK.
+
+Apache-2.0, 48 kHz, 20 preset voices (North / Central / South) — no reference
+clip needed. On CPU (incl. Apple Silicon) the SDK runs ONNX int8 without
+PyTorch; on CUDA it switches to a batched PyTorch engine (install
+`torch==2.8.0` cu128 + `transformers==4.57.6` first, see README).
+
+Voice names are either VieNeu presets ("Phạm Tuyên", "Ngọc Huyền", …) or
+voice-bank entries (pipeline.voices) that get enrolled once via
+`engine.add_voice`. Contract mirrors pipeline/tts_supertonic.py so
+pipeline/tts.py can dispatch.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
 import threading
 from pathlib import Path
@@ -1108,87 +1152,39 @@ import soundfile as sf
 from . import config as _conf
 from . import voices as _voices
 from .costs import CostTracker
-from .devices import pick_device
 from .ffmpeg_utils import FFMPEG_EXE
 from .transcriber import Segment
 from .tts_supertonic import _append_silence
 from .vi_text import normalize_for_tts
 
 _LOCK = threading.Lock()
-_ENGINE: "F5ViEngine | None" = None
+_ENGINE: Any = None
+_ENROLLED: set[str] = set()   # bank voices already registered with the engine
+
+_DEFAULT_MALE = "Phạm Tuyên"
+_DEFAULT_FEMALE = "Ngọc Huyền"
 
 
-def _fcfg() -> dict[str, Any]:
-    return _conf.get().get("f5vi", {})
+def _vcfg() -> dict[str, Any]:
+    return _conf.get().get("vieneu", {})
 
 
-class F5ViEngine:
-    """Thin wrapper over f5_tts.infer.utils_infer with per-voice reference caching."""
-
-    def __init__(self, cfg: dict[str, Any]):
-        from importlib.resources import files
-        from omegaconf import OmegaConf
-        import torch
-        from f5_tts.infer.utils_infer import load_model, load_vocoder
-        from f5_tts.model import DiT
-
-        self.cfg = cfg
-        self.device = pick_device(cfg.get("device", "auto"))
-        model_dir = Path(os.path.expanduser(cfg.get("model_dir", "~/.cache/violin/f5vi")))
-        ckpt = model_dir / cfg.get("ckpt_file", "model_last.pt")
-        vocab = model_dir / cfg.get("vocab_file", "vocab.txt")
-        if not ckpt.exists() or not vocab.exists():
-            raise RuntimeError(
-                f"F5-TTS-vi files missing in {model_dir}: need {ckpt.name} and {vocab.name}.\n"
-                "Download from https://huggingface.co/hynt/F5-TTS-Vietnamese-ViVoice "
-                "(model_last.pt, and config.json renamed to vocab.txt)."
-            )
-        model_name = cfg.get("model_name", "F5TTS_Base")
-        arch_cfg = OmegaConf.load(str(files("f5_tts").joinpath(f"configs/{model_name}.yaml")))
-        self.mel_spec_type = cfg.get("vocoder", "vocos")
-        print(f"      [f5vi] loading {model_name} on {self.device} from {model_dir}…")
-        self.model = load_model(
-            DiT, arch_cfg.model.arch, str(ckpt),
-            mel_spec_type=self.mel_spec_type, vocab_file=str(vocab), device=self.device,
-        )
-        self.vocoder = load_vocoder(vocoder_name=self.mel_spec_type, is_local=False, device=self.device)
-        self._torch = torch
-        self._ref_cache: dict[str, tuple[str, str]] = {}
-
-    def _ref(self, ref_wav: str, ref_text: str) -> tuple[str, str]:
-        from f5_tts.infer.utils_infer import preprocess_ref_audio_text
-        key = f"{ref_wav}|{ref_text}"
-        if key not in self._ref_cache:
-            self._ref_cache[key] = preprocess_ref_audio_text(ref_wav, ref_text)
-        return self._ref_cache[key]
-
-    def synthesize(
-        self, text: str, ref_wav: str, ref_text: str,
-        speed: float = 1.0, fix_duration: float | None = None,
-    ) -> tuple[np.ndarray, int]:
-        from f5_tts.infer.utils_infer import infer_process
-        seed = int(self.cfg.get("seed", -1))
-        if seed >= 0:
-            self._torch.manual_seed(seed)
-        audio_ref, text_ref = self._ref(ref_wav, ref_text)
-        wav, sr, _spec = infer_process(
-            audio_ref, text_ref, text, self.model, self.vocoder,
-            mel_spec_type=self.mel_spec_type,
-            speed=float(speed),
-            nfe_step=int(self.cfg.get("nfe_step", 32)),
-            cfg_strength=float(self.cfg.get("cfg_strength", 2.0)),
-            fix_duration=fix_duration,
-            device=self.device,
-        )
-        return np.asarray(wav, dtype=np.float32), int(sr)
-
-
-def get_shared_tts() -> F5ViEngine:
+def get_shared_tts() -> Any:
+    """Lazy-load one `vieneu.Vieneu` engine (downloads ~1 GB on first run)."""
     global _ENGINE
     if _ENGINE is None:
         with _LOCK:
             if _ENGINE is None:
-                _ENGINE = F5ViEngine(_fcfg())
+                from vieneu import Vieneu
+                cfg = _vcfg()
+                print("      [vieneu] loading VieNeu-TTS v3 Turbo…")
+                _ENGINE = Vieneu(
+                    backend=cfg.get("backend", "auto"),
+                    precision=cfg.get("precision", "int8"),
+                    device=cfg.get("device", "auto"),
+                    threads=int(cfg.get("threads", 0)),
+                    max_batch_size=int(cfg.get("max_batch_size", 32)),
+                )
     return _ENGINE
 
 
@@ -1196,35 +1192,72 @@ def unload() -> None:
     global _ENGINE
     with _LOCK:
         _ENGINE = None
+        _ENROLLED.clear()
     from .devices import free_memory
     free_memory()
 
 
-# ── voice catalog (delegates to the voice bank) ─────────────
+# ── voice catalog ───────────────────────────────────────────
+
+def _preset_names(engine: Any | None = None) -> list[str]:
+    if engine is None:
+        return []
+    try:
+        return [voice_id for _label, voice_id in engine.list_preset_voices()]
+    except Exception:
+        return []
+
 
 def native_voices_for(language_code: str) -> list[str]:
-    return _voices.native_voices_for(language_code)
+    """[male, female] preset names from config (defaults: Phạm Tuyên / Ngọc Huyền)."""
+    _ = language_code  # vi only
+    vcfg = _conf.get().get("voices", {})
+    return [vcfg.get("default_male") or _DEFAULT_MALE, vcfg.get("default_female") or _DEFAULT_FEMALE]
 
 
 def all_voices() -> dict[str, list[str]]:
-    return _voices.all_voices()
+    names = list(_voices.load_catalog())
+    return {"vi": [_DEFAULT_MALE, _DEFAULT_FEMALE] + [n for n in names if n not in (_DEFAULT_MALE, _DEFAULT_FEMALE)]}
 
 
 def voice_descriptions() -> dict[str, str]:
-    return _voices.voice_descriptions()
+    out = {_DEFAULT_MALE: "male — VieNeu preset (Bắc, natural)", _DEFAULT_FEMALE: "female — VieNeu preset (Bắc, natural)"}
+    out.update(_voices.voice_descriptions())
+    return out
+
+
+def _resolve_voice(engine: Any, voice: str) -> str:
+    """Return the name to pass to `engine.infer(voice=...)`, enrolling bank clips once."""
+    presets = _preset_names(engine)
+    if voice in presets:
+        return voice
+    catalog = _voices.load_catalog()
+    if voice in catalog:
+        if voice not in _ENROLLED:
+            engine.add_voice(voice, str(catalog[voice].ref_wav))
+            _ENROLLED.add(voice)
+        return voice
+    if not presets:  # engine gave no list (fake / old SDK): trust the caller
+        return voice
+    raise KeyError(f"voice '{voice}' is neither a VieNeu preset {presets} nor in the voice bank {sorted(catalog)}")
 
 
 # ── synthesis ───────────────────────────────────────────────
 
 def _write_44k_mono(wav: np.ndarray, sr: int, output_path: str) -> None:
-    """Write float audio to disk, resampling to 44.1 kHz mono PCM16 via ffmpeg."""
     tmp = output_path + ".raw.wav"
-    sf.write(tmp, wav, sr, subtype="PCM_16")
+    sf.write(tmp, np.asarray(wav, dtype=np.float32), sr, subtype="PCM_16")
     subprocess.run(
         [FFMPEG_EXE, "-y", "-v", "error", "-i", tmp, "-ac", "1", "-ar", "44100", "-c:a", "pcm_s16le", output_path],
         check=True, capture_output=True,
     )
     Path(tmp).unlink(missing_ok=True)
+
+
+def _prepare_text(text: str, language: str, cfg: dict[str, Any]) -> str:
+    if not language.lower().startswith("vi") or not cfg.get("normalize_numbers", True):
+        return text
+    return normalize_for_tts(text, use_vinorm=False, loanwords=cfg.get("loanwords") or {}, lowercase=False)
 
 
 def synthesize_segment(
@@ -1236,21 +1269,23 @@ def synthesize_segment(
     speed: float | None = None,
     emotion: str | None = None,
 ) -> str:
-    """Synthesize one segment with the fixed voice `voice`; write 44.1 kHz mono WAV."""
-    _ = emotion  # F5-TTS has no emotion control
+    """Synthesize one segment; write 44.1 kHz mono WAV with tail silence."""
+    _ = speed, emotion  # VieNeu has neither speed nor emotion parameters
     engine = client if client is not None else get_shared_tts()
-    fcfg = _fcfg()
-    v = _voices.get_voice(voice)
-    gen_text = normalize_for_tts(
-        text,
-        use_vinorm=None if fcfg.get("use_vinorm", "auto") == "auto" else bool(fcfg.get("use_vinorm")),
-        loanwords=fcfg.get("loanwords") or {},
-    ) if language.lower().startswith("vi") else text
-    spd = max(1.0, min(2.0, float(speed if speed is not None else fcfg.get("speed", 1.0))))
-
+    cfg = _vcfg()
+    gen_text = _prepare_text(text, language, cfg)
     with _LOCK:
-        wav, sr = engine.synthesize(gen_text, str(v.ref_wav), v.ref_text, speed=spd)
-    _write_44k_mono(wav, sr, output_path)
+        name = _resolve_voice(engine, voice)
+        wav = engine.infer(
+            gen_text,
+            voice=name,
+            temperature=float(cfg.get("temperature", 0.8)),
+            top_k=int(cfg.get("top_k", 25)),
+            top_p=float(cfg.get("top_p", 0.95)),
+            repetition_penalty=float(cfg.get("repetition_penalty", 1.2)),
+            apply_watermark=bool(cfg.get("watermark", True)),
+        )
+    _write_44k_mono(wav, int(getattr(engine, "sample_rate", 48000)), output_path)
 
     tcfg = _conf.get().get("tts", {})
     if text.rstrip().endswith((".", "!", "?", "。", "！", "？")):
@@ -1272,7 +1307,7 @@ def synthesize_segments(
     speed: float | None = None,
     emotion: str | None = None,
 ) -> list[str]:
-    """Serial synthesis (F5 saturates the accelerator; no thread pool)."""
+    """Serial synthesis (the engine is not thread-safe; GPU batching is internal to the SDK)."""
     vm = voice_map or {}
     paths: list[str] = []
     for i, seg in enumerate(segments):
@@ -1286,24 +1321,26 @@ def synthesize_segments(
     return paths
 ```
 
-Lưu ý spike M0(a): nếu `f5_tts` phiên bản cài đặt đổi tên tham số (`load_model(..., vocab_file=)`, `infer_process(..., fix_duration=)`), sửa cho khớp — kiểm tra bằng `uv run python -c "import inspect, f5_tts.infer.utils_infer as u; print(inspect.signature(u.load_model)); print(inspect.signature(u.infer_process))"`.
+Lưu ý test `test_unknown_voice_raises_helpful_error`: `pytest.raises(KeyError, match="Phạm Tuyên")` khớp vì thông báo lỗi liệt kê danh sách preset.
 
-- [ ] **Step 4: Nối vào `pipeline/tts.py`**
+- [ ] **Step 5: Nối vào `pipeline/tts.py`**
 
 Trong `_backend`: thêm trước nhánh `else`:
 
 ```python
-    elif p == "f5vi":
-        from . import tts_f5vi as _imp
+    elif p == "vieneu":
+        from . import tts_vieneu as _imp
 ```
 
 Trong `_make_client`: thêm đầu hàm:
 
 ```python
-    if provider == "f5vi":
-        from . import tts_f5vi as _f5
-        return _f5.get_shared_tts()
+    if provider == "vieneu":
+        from . import tts_vieneu as _vn
+        return _vn.get_shared_tts()
 ```
+
+Trong `pipeline/llm_client.py`, thêm `"vieneu": None,` vào `_PROVIDER_ENV_KEY` ngay dưới `"f5vi": None,` (backend local, không cần env key) — thêm `pipeline/llm_client.py` vào file list của task này.
 
 Thêm cuối file:
 
@@ -1311,8 +1348,8 @@ Thêm cuối file:
 def make_synthesizer(language: str = "en", emotion: str | None = None):
     """Return `synth(text, voice, out_path, speed) -> out_path` bound to the active backend.
 
-    Used by pipeline.fitter, which needs per-segment speed control and calls
-    TTS one segment at a time.
+    Used by pipeline.fitter, which calls TTS one segment at a time. Backends
+    without speed control (vieneu) ignore `speed`.
     """
     provider = get_tts_provider()
     backend = _backend(provider)
@@ -1324,66 +1361,41 @@ def make_synthesizer(language: str = "en", emotion: str | None = None):
     return _synth
 ```
 
-- [ ] **Step 5: Config + extras**
+- [ ] **Step 6: Config**
 
-`config/default.yaml` thêm khối sau `voices:`:
+`config/default.yaml`: trong khối `voices` đổi `default_male: ""` → `default_male: "Phạm Tuyên"` và `default_female: ""` → `default_female: "Ngọc Huyền"` (kèm comment `# VieNeu preset name or voice-bank name`). Thêm khối sau `voices:`:
 
 ```yaml
-# ── 3c. F5-TTS Vietnamese (only used when models.tts.provider = f5vi) ──
-f5vi:
-  model_dir: "~/.cache/violin/f5vi"   # holds model_last.pt + vocab.txt (HF: hynt/F5-TTS-Vietnamese-ViVoice)
-  ckpt_file: model_last.pt
-  vocab_file: vocab.txt
-  model_name: F5TTS_Base              # arch config name inside the f5_tts package
-  vocoder: vocos
-  device: auto                        # auto | cuda | mps | cpu
-  nfe_step: 32                        # 16 = faster, 32 = default quality
-  cfg_strength: 2.0
-  speed: 1.0                          # natural; fitter raises per segment up to fit.max_tts_speed
-  seed: -1                            # >= 0 for reproducible output
-  use_vinorm: auto                    # auto (if installed) | true | false
-  loanwords: {}                       # e.g. {"GPU": "gi pi u", "API": "a pi ai"}
+# ── 3c. VieNeu-TTS v3 Turbo (only used when models.tts.provider = vieneu) ──
+vieneu:
+  backend: auto              # auto (ONNX on CPU / PyTorch on CUDA) | onnx | pytorch
+  precision: int8            # ONNX/CPU backbone: int8 (fast) | fp32 (max fidelity)
+  device: auto
+  threads: 0                 # ONNX intra-op threads, 0 = engine default
+  max_batch_size: 32         # PyTorch/GPU static batching cap
+  temperature: 0.8           # SDK recommendation for v3 Turbo
+  top_k: 25
+  top_p: 0.95
+  repetition_penalty: 1.2
+  watermark: true            # SDK audio watermark (apply_watermark)
+  normalize_numbers: false   # VieNeu's own normalizer already reads digits/percent/acronyms (verified on GPU spike); enable only for odd inputs
+  loanwords: {}              # optional pronunciation map, e.g. {"GPU": "gi pi u"}
 ```
 
-`pyproject.toml` optional-dependencies:
+KHÔNG sửa `pyproject.toml` và KHÔNG chạy `uv sync`/`uv add` trong task này (ruling: extras chuyển sang Task 12; giữ Mac nhẹ). Test dùng FakeEngine nên không cần `vieneu` cài sẵn.
 
-```toml
-[project.optional-dependencies]
-# Fully-local stack. Mac: `uv sync --extra local-mac`; NVIDIA: `uv sync --extra local-gpu`.
-local-mac = [
-    "faster-whisper>=1.1.0",
-    "supertonic>=0.1.0",
-    "f5-tts>=1.1.0",
-    "vinorm>=2.0.7",
-    "librosa>=0.10",
-]
-local-gpu = [
-    "faster-whisper>=1.1.0",
-    "f5-tts>=1.1.0",
-    "vinorm>=2.0.7",
-    "librosa>=0.10",
-]
-local = [   # backwards-compatible alias of local-mac
-    "faster-whisper>=1.1.0",
-    "supertonic>=0.1.0",
-    "f5-tts>=1.1.0",
-    "vinorm>=2.0.7",
-    "librosa>=0.10",
-]
-```
+Cập nhật `tests/test_voices.py::test_native_voices_first_male_then_female` nếu nó phụ thuộc `default_male == ""`: test đó truyền `bank=` tường minh và catalog riêng, còn `voices.native_voices_for` ưu tiên `default_male` **chỉ khi tên có trong catalog** (`if preferred and preferred in catalog`), nên vẫn pass; xác nhận bằng cách chạy.
 
-Chạy `uv sync --extra local-mac` (tải torch ~ vài phút). Nếu `vinorm` không cài được trên arm64 (spike M0(e)), bỏ khỏi extras và ghi vào README; `vi_text` đã có fallback.
-
-- [ ] **Step 6: Chạy test**
+- [ ] **Step 7: Chạy test**
 
 Run: `uv run python -m pytest -q`
-Expected: `59 passed`.
+Expected: 68 cũ + 7 mới + 1 vi_text = `76 passed`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add pipeline/tts_f5vi.py pipeline/tts.py config/default.yaml pyproject.toml uv.lock tests/test_tts_f5vi.py
-git commit -m "feat(tts): local F5-TTS Vietnamese backend with voice bank and make_synthesizer"
+git add pipeline/tts_vieneu.py pipeline/tts.py pipeline/vi_text.py config/default.yaml tests/test_tts_vieneu.py tests/test_vi_text.py
+git commit -m "feat(tts): VieNeu-TTS v3 Turbo backend with preset voices and make_synthesizer"
 ```
 
 ---
@@ -1731,13 +1743,13 @@ git commit -m "feat(transcriber): min_duration merge for too-short segments"
 **Interfaces:**
 - Consumes: `vi_text.count_syllables`, `Segment`, `synth(text, voice, out_path, speed) -> path` (Task 6), `shorten_fn(source_text, current_text, budget_syllables, budget_seconds) -> str` (bọc `translator.shorten_segment`, Task 7).
 - Produces:
-  - `DubUnit` dataclass (fields: `seg_id, speaker, voice, source_text, text, start, end, slot_end, syllables, est_s, tts_path, tts_dur, tts_speed, strategy, rounds, over_s`; property `budget_s`).
+  - `DubUnit` dataclass (fields: `seg_id, speaker, voice, source_text, text, start, end, slot_end, syllables, est_s, tts_path, tts_dur, strategy, rounds, over_s`; property `budget_s`).
   - `compute_slots(segments, total_duration, max_borrow_s, margin_s) -> list[float]` (slot_end mỗi segment).
   - `budgets_for(segments, slots, sec_per_syllable) -> list[tuple[float, int]]` (cho `translate_segments`).
   - `build_units(segments, slots, voice_map, default_voice) -> list[DubUnit]`.
   - `fit_text(units, shorten_fn, fcfg) -> None`, `fit_audio(units, synth, out_dir, fcfg) -> None`.
   - `apply_units(units, segments) -> tuple[list[Segment], list[str]]`, `save_units(units, path) -> None`, `wav_duration(path) -> float`.
-- Config `fit`: `enabled, sec_per_syllable, overrun_tolerance, max_shorten_rounds, max_tts_speed, max_pause_borrow_s, margin_s`.
+- Config `fit`: `enabled, sec_per_syllable, overrun_tolerance, max_shorten_rounds, max_pause_borrow_s, margin_s`.
 
 - [ ] **Step 1: Viết test thất bại**
 
@@ -1755,7 +1767,7 @@ from pipeline import fitter
 from pipeline.transcriber import Segment
 
 FCFG = dict(sec_per_syllable=0.2, overrun_tolerance=1.3, max_shorten_rounds=2,
-            max_tts_speed=1.15, max_pause_borrow_s=0.6, margin_s=0.05)
+            max_pause_borrow_s=0.6, margin_s=0.05)
 
 
 def _segs():
@@ -1815,17 +1827,26 @@ def _fake_synth(tmp_path):
     return synth, calls
 
 
-def test_fit_audio_resynths_over_budget_at_capped_speed(tmp_path):
-    units = fitter.build_units(_segs(), [1.0, 5.15, 7.6], {}, "nam-1")   # unit0: 5 syll = 1.0 s at 1.0 → fits exactly
+def test_fit_audio_measures_and_flags_overrun(tmp_path):
+    units = fitter.build_units(_segs(), [1.0, 5.15, 7.6], {}, "nam-1")   # unit0 budget 1.0 s
     units[0].text = "a b c d e f g h"                                    # 8 syll = 1.6 s > 1.0
     synth, calls = _fake_synth(tmp_path)
     fitter.fit_audio(units, synth, str(tmp_path), FCFG)
     u = units[0]
-    assert u.tts_speed == pytest.approx(1.15)
-    assert u.tts_dur == pytest.approx(1.6 / 1.15, abs=0.02)
-    assert u.strategy == "tts_speed" and u.over_s > 0
-    assert [c[2] for c in calls if c[0] == "a b c d e f g h"] == [1.0, 1.15]
-    assert units[1].tts_speed == 1.0 and units[1].strategy == "natural"
+    assert u.tts_dur == pytest.approx(1.6, abs=0.02)
+    assert u.strategy == "over" and u.over_s == pytest.approx(0.6, abs=0.02)
+    assert [c for c in calls if c[0] == "a b c d e f g h"] == [("a b c d e f g h", "nam-1", 1.0)]   # synthesized once
+    assert units[1].strategy == "natural" and units[1].over_s == 0.0
+    assert all(Path(x.tts_path).exists() for x in units)
+
+
+def test_fit_audio_keeps_shortened_flag_when_still_over(tmp_path):
+    units = fitter.build_units(_segs(), [1.0, 5.15, 7.6], {}, "nam-1")
+    units[0].text = "a b c d e f g h"
+    units[0].rounds, units[0].strategy = 1, "shortened"
+    synth, _ = _fake_synth(tmp_path)
+    fitter.fit_audio(units, synth, str(tmp_path), FCFG)
+    assert units[0].strategy == "shortened+over"
 
 
 def test_apply_units_extends_end_to_borrow_pause(tmp_path):
@@ -1861,9 +1882,9 @@ Expected: FAIL — `ModuleNotFoundError: pipeline.fitter`.
 Phase A (`fit_text`, LLM only):  estimate seconds from syllables; when the
     estimate exceeds the slot budget by more than `overrun_tolerance`, ask the
     LLM to shorten the translation (≤ `max_shorten_rounds`).
-Phase B (`fit_audio`, TTS only): synthesize at natural speed, measure; if the
-    clip is still longer than the budget, re-synthesize once with the TTS
-    `speed` raised up to `max_tts_speed`.
+Phase B (`fit_audio`, TTS only): synthesize each unit once at natural speed,
+    measure, and flag units still longer than their budget (`over_s`); the
+    TTS has no speed control, so the merger absorbs the residual.
 `apply_units` then extends `Segment.end` to borrow the following pause
 (bounded by `slot_end`); whatever is still over is absorbed by the merger
 (video slow-down ≤ 8 %, atempo ≤ 1.4, hard trim). Speech is never slowed.
@@ -1902,8 +1923,7 @@ class DubUnit:
     est_s: float = 0.0
     tts_path: str = ""
     tts_dur: float = 0.0
-    tts_speed: float = 1.0
-    strategy: str = "natural"   # natural | shortened | tts_speed
+    strategy: str = "natural"   # natural | shortened | over | shortened+over
     rounds: int = 0
     over_s: float = 0.0          # seconds still over budget after phase B (merger absorbs)
 
@@ -1979,25 +1999,26 @@ def fit_text(units: list[DubUnit], shorten_fn: ShortenFn, fcfg: dict) -> None:
 
 
 def fit_audio(units: list[DubUnit], synth: SynthFn, out_dir: str, fcfg: dict) -> None:
-    max_speed = float(fcfg.get("max_tts_speed", 1.15))
+    """Phase B: synthesize each unit once at natural speed and measure it.
+
+    VieNeu has no speed control, so nothing is re-synthesized here; units
+    still longer than their budget are flagged (`over_s`) and the merger
+    absorbs the overrun (video slow-down ≤ 8 %, atempo ≤ 1.4, hard trim).
+    `fcfg` is accepted for interface symmetry with `fit_text`.
+    """
+    _ = fcfg
     os.makedirs(out_dir, exist_ok=True)
-    sped = 0
+    over = 0
     for i, unit in enumerate(units):
         path = str(Path(out_dir) / f"seg_{unit.seg_id:05d}.wav")
         unit.tts_path = synth(unit.text, unit.voice, path, 1.0)
         unit.tts_dur = wav_duration(unit.tts_path)
-        budget = unit.budget_s
-        if budget > 0 and unit.tts_dur > budget:
-            speed = min(unit.tts_dur / budget, max_speed)
-            if speed > 1.02:
-                unit.tts_path = synth(unit.text, unit.voice, path, speed)
-                unit.tts_dur = wav_duration(unit.tts_path)
-                unit.tts_speed = round(speed, 3)
-                unit.strategy = "tts_speed"
-                sped += 1
-        unit.over_s = round(max(0.0, unit.tts_dur - budget), 3)
+        unit.over_s = round(max(0.0, unit.tts_dur - unit.budget_s), 3)
+        if unit.over_s > 0:
+            unit.strategy = "shortened+over" if unit.rounds else "over"
+            over += 1
         if (i + 1) % 10 == 0 or i + 1 == len(units):
-            print(f"      [fit] phase B: {i + 1}/{len(units)} synthesized ({sped} re-sped)")
+            print(f"      [fit] phase B: {i + 1}/{len(units)} synthesized ({over} over budget)")
 
 
 def apply_units(units: list[DubUnit], segments: list[Segment]) -> tuple[list[Segment], list[str]]:
@@ -2031,7 +2052,6 @@ fit:
   sec_per_syllable: 0.21      # seconds per Vietnamese syllable at TTS speed 1.0 — calibrate per voice (spike M0a)
   overrun_tolerance: 1.30     # ask the LLM to shorten only when est > budget × this
   max_shorten_rounds: 2
-  max_tts_speed: 1.15         # F5-TTS `speed` ceiling before handing the residual to the merger
   max_pause_borrow_s: 0.6     # how much of the following pause a sentence may borrow
   margin_s: 0.05              # keep this gap before the next sentence's onset
 ```
@@ -2039,7 +2059,7 @@ fit:
 - [ ] **Step 4: Chạy test**
 
 Run: `uv run python -m pytest tests/test_fitter.py -v && uv run python -m pytest -q`
-Expected: 8 passed; tổng `75 passed`.
+Expected: 9 passed; tổng = số test trước task + 9.
 
 - [ ] **Step 5: Commit**
 
@@ -2225,7 +2245,7 @@ from pipeline.transcriber import Segment
 def test_fit_path_replaces_synthesize_and_keeps_sentence_units(monkeypatch):
     cfg = pipeline_config.load()
     monkeypatch.setitem(cfg["fit"], "enabled", True)
-    monkeypatch.setitem(cfg["models"], "tts", {"provider": "f5vi", "model": "f5-tts-vi"})
+    monkeypatch.setitem(cfg["models"], "tts", {"provider": "vieneu", "model": "vieneu-v3-turbo"})
 
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "out.mp4"
@@ -2418,16 +2438,14 @@ và truyền `fit=False if args.no_fit else None`.
 # Mac M-series preset — FULLY LOCAL (no network after models are downloaded).
 #
 # STT  : faster-whisper large-v3-turbo (CTranslate2, int8, CPU)
-# LLM  : Ollama local — qwen3.5:9b-mlx  (brew install ollama; ollama pull qwen3.5:9b-mlx)
-# TTS  : F5-TTS Vietnamese (hynt/F5-TTS-Vietnamese-ViVoice) on MPS, fixed voices from assets/voices/vi
-# FIT  : syllable-budget shortening + measured TTS re-speed + pause borrowing
+# LLM  : Ollama local — gemma4:12b-mlx  (brew install ollama; ollama pull gemma4:12b-mlx)
+# TTS  : VieNeu-TTS v3 Turbo via `vieneu` (ONNX int8 on CPU — torch-free, ~7× realtime on Apple Silicon)
+# FIT  : syllable-budget shortening + measured overrun + pause borrowing; merger absorbs the residual
 #
 # Setup:
 #   uv sync --extra local-mac
-#   mkdir -p ~/.cache/violin/f5vi && cd ~/.cache/violin/f5vi
-#   curl -L -o model_last.pt https://huggingface.co/hynt/F5-TTS-Vietnamese-ViVoice/resolve/main/model_last.pt
-#   curl -L -o vocab.txt     https://huggingface.co/hynt/F5-TTS-Vietnamese-ViVoice/resolve/main/config.json
-#   uv run scripts/make_ref_clip.py --source my_voice.wav --start 0 --end 8 --name nam-1 --gender male
+#   brew install ollama && brew services start ollama && ollama pull gemma4:12b-mlx
+#   (VieNeu downloads its weights from Hugging Face on first run)
 # Run:
 #   uv run main.py video.mp4 video_vi.mp4 --language Vietnamese --config config/local_mac.yaml
 
@@ -2437,14 +2455,14 @@ models:
     model: large-v3-turbo
   translation:
     provider: ollama
-    model: qwen3.5:9b-mlx
+    model: gemma4:12b-mlx
     base_url: http://localhost:11434/v1
   tts:
-    provider: f5vi
-    model: f5-tts-vi
+    provider: vieneu
+    model: vieneu-v3-turbo
   chat:
     provider: ollama
-    model: qwen3.5:9b-mlx
+    model: gemma4:12b-mlx
     base_url: http://localhost:11434/v1
 
 transcription:
@@ -2463,11 +2481,15 @@ merge:
 
 fit:
   enabled: true
-  sec_per_syllable: 0.21                # re-measure with scripts/calibrate (spike M0a) for your voice
+  sec_per_syllable: 0.23                # measured on VieNeu presets Phạm Tuyên/Ngọc Huyền (0.225); re-measure with scripts/calibrate_voice.py
 
-f5vi:
-  device: auto
-  nfe_step: 32
+vieneu:
+  backend: auto                         # → ONNX on Mac
+  precision: int8
+
+voices:
+  default_male: "Phạm Tuyên"            # VieNeu presets (Bắc, natural); see pipeline/tts_vieneu.py for all 20
+  default_female: "Ngọc Huyền"
 
 tts:
   workers: 1
@@ -2488,8 +2510,10 @@ merge_video:
 
 ```yaml
 # NVIDIA GPU preset — FULLY LOCAL. Same stages as local_mac.yaml on CUDA.
-# LLM: Ollama (`ollama pull qwen3.5:27b`) or any OpenAI-compatible server (vLLM) via provider openai_compat.
+# Tested on Vast.ai 2× RTX 3090: Ollama on GPU 1 (CUDA_VISIBLE_DEVICES=1 ollama serve), ASR/TTS on GPU 0.
 #   uv sync --extra local-gpu
+#   uv pip install "torch==2.8.0" "torchaudio==2.8.0" --index-url https://download.pytorch.org/whl/cu128   # VieNeu GPU engine
+#   ollama pull gemma4:31b            # Q4, ~19 GB — fits a 24 GB card
 #   uv run main.py video.mp4 video_vi.mp4 --language Vietnamese --config config/local_gpu.yaml
 
 models:
@@ -2498,14 +2522,14 @@ models:
     model: large-v3
   translation:
     provider: ollama                    # or: openai_compat + base_url: http://localhost:8000/v1 (vLLM)
-    model: qwen3.5:27b
+    model: gemma4:31b
     base_url: http://localhost:11434/v1
   tts:
-    provider: f5vi
-    model: f5-tts-vi
+    provider: vieneu
+    model: vieneu-v3-turbo
   chat:
     provider: ollama
-    model: qwen3.5:27b
+    model: gemma4:31b
     base_url: http://localhost:11434/v1
 
 transcription:
@@ -2524,11 +2548,16 @@ merge:
 
 fit:
   enabled: true
-  sec_per_syllable: 0.21
+  sec_per_syllable: 0.23
 
-f5vi:
+vieneu:
+  backend: auto                         # → PyTorch batched engine on CUDA
   device: cuda
-  nfe_step: 32
+  max_batch_size: 32
+
+voices:
+  default_male: "Phạm Tuyên"
+  default_female: "Ngọc Huyền"
 
 tts:
   workers: 1
@@ -2544,6 +2573,7 @@ merge_video:
   hard_trim: true
   voiceover_volume: 0.02
 ```
+
 
 `resume_from_segments.py`: trong `main()` nơi rẽ nhánh theo `stage`, coi `"fitted"` như `"translated"` (không dịch lại, không re-split; TTS + merge). Cụ thể: nơi có `if stage == "transcribed": … translate …`, phần `else` (translated) đã bỏ qua dịch; thêm điều kiện để với stage `fitted` KHÔNG gọi `merge_continuous_segments(..., inf)` + `split_into_sentences` (đơn vị đã là câu và đã kéo `end`). Cập nhật docstring liệt kê `fitted`.
 
@@ -2565,6 +2595,7 @@ git commit -m "feat(pipeline): wire duration fitter into dub_video; fully-local 
 
 **Files:**
 - Modify: `README.md` (mục "Local Vietnamese preset" → hướng dẫn mới)
+- Modify: `pyproject.toml` (extras `local-mac` / `local-gpu` với `vieneu`; chuyển từ Task 6 theo ruling)
 - Modify: `.claude/skills/video-translator/SKILL.md` (nhắc `--config config/local_mac.yaml`, `--no-fit`)
 - Create: `scripts/calibrate_voice.py` (đo `sec_per_syllable` cho một voice)
 
@@ -2629,16 +2660,48 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 2: Chuẩn bị model + voice + Ollama (một lần)**
+- [ ] **Step 2: Extras trong `pyproject.toml` (chuyển từ Task 6 theo ruling)**
+
+```toml
+[project.optional-dependencies]
+# Fully-local stack. Mac: `uv sync --extra local-mac`; NVIDIA: `uv sync --extra local-gpu`
+# then install the CUDA torch build the VieNeu GPU engine expects (see README).
+local-mac = [
+    "faster-whisper>=1.1.0",
+    "supertonic>=0.1.0",
+    "vieneu>=3.3.0",
+    "librosa>=0.10",
+]
+local-gpu = [
+    "faster-whisper>=1.1.0",
+    "vieneu>=3.3.0",
+    "transformers==4.57.6",   # pinned by the vieneu GPU engine (Qwen3 backbone + MOSS codec)
+    "librosa>=0.10",
+]
+local = [   # backwards-compatible alias of local-mac
+    "faster-whisper>=1.1.0",
+    "supertonic>=0.1.0",
+    "vieneu>=3.3.0",
+    "librosa>=0.10",
+]
+```
+
+Chạy `uv lock` (chỉ resolve, không cài); nếu Mac đang bận, chạy trên server GPU trong repo đã rsync. Sau đó `uv sync --extra local-mac` trên Mac khi user cho phép, hoặc `uv sync --extra local-gpu` trên server.
+
+- [ ] **Step 2b: Chuẩn bị model + Ollama (một lần, trên máy sẽ chạy E2E)**
 
 ```bash
-brew list ollama || brew install ollama; brew services start ollama; ollama pull qwen3.5:9b-mlx
-mkdir -p ~/.cache/violin/f5vi && cd ~/.cache/violin/f5vi \
-  && curl -L -o model_last.pt https://huggingface.co/hynt/F5-TTS-Vietnamese-ViVoice/resolve/main/model_last.pt \
-  && curl -L -o vocab.txt https://huggingface.co/hynt/F5-TTS-Vietnamese-ViVoice/resolve/main/config.json
-cd "<repo>" && uv run scripts/make_ref_clip.py --source <clip giọng Việt của bạn> --start 0 --end 8 --name nam-1 --gender male
-uv run scripts/calibrate_voice.py --voice nam-1      # ghi giá trị vào config/local_mac.yaml fit.sec_per_syllable
+# Mac
+brew list ollama || brew install ollama; brew services start ollama; ollama pull gemma4:12b-mlx
+# GPU server (Vast.ai)
+CUDA_VISIBLE_DEVICES=1 OLLAMA_MODELS=/workspace/ollama nohup ollama serve > /workspace/ollama.log 2>&1 &
+ollama pull gemma4:31b
+uv pip install "torch==2.8.0" "torchaudio==2.8.0" --index-url https://download.pytorch.org/whl/cu128
+# (tuỳ chọn) clone giọng riêng thay vì preset:
+uv run scripts/make_ref_clip.py --source <clip giọng Việt> --start 0 --end 8 --name nam-1 --gender male
+uv run scripts/calibrate_voice.py --voice "Phạm Tuyên" --config config/local_gpu.yaml   # ghi vào fit.sec_per_syllable
 ```
+
 
 - [ ] **Step 3: Chạy E2E offline**
 
@@ -2651,7 +2714,7 @@ uv run main.py <video tiếng Anh 2–3 phút>.mp4 output/e2e_vi.mp4 --language 
 
 Kiểm tra:
 - `output/e2e_vi.mp4` mở được; `ffprobe` độ dài ≤ 1.08 × gốc.
-- `output/e2e_vi.fit.units.json`: tỉ lệ unit `strategy == "tts_speed"` < 30 %, `over_s > 0.5` < 10 %.
+- `output/e2e_vi.fit.units.json`: tỉ lệ unit có `over_s > 0` < 30 %, `over_s > 0.5` < 10 %; unit `shortened`/`shortened+over` có bản dịch vẫn giữ nghĩa khi đọc so với `source_text`.
 - Nghe 3 đoạn ngẫu nhiên: giọng bắt đầu đúng lúc người nói gốc bắt đầu (± 0.2 s), không bị cắt giữa câu.
 - `output/e2e_timings.json`: thời gian từng bước (ghi vào spec spikes để so với GPU ở M4).
 
@@ -2661,8 +2724,8 @@ README mục "Run from source" thay khối "Local Vietnamese workflow" bằng:
 
 ```markdown
 # Fully-local Vietnamese dubbing (Mac M-series / NVIDIA) — no API keys
-uv sync --extra local-mac            # or --extra local-gpu
-# one-time: Ollama model, F5-TTS-vi checkpoint, one reference clip — see config/local_mac.yaml header
+uv sync --extra local-mac            # or --extra local-gpu (see GPU torch note below)
+# one-time: `ollama pull gemma4:12b-mlx` (Mac) / `gemma4:31b` (GPU); VieNeu downloads its weights on first run
 uv run main.py lecture.mp4 lecture_vi.mp4 --language Vietnamese --config config/local_mac.yaml
 ```
 
@@ -2670,10 +2733,10 @@ và một đoạn ngắn mô tả stage fit (`<output>.fit.units.json`, `--no-fi
 
 - [ ] **Step 5: Test + commit**
 
-Run: `uv run python -m pytest -q` → `77 passed`.
+Run: `uv run python -m pytest -q` → toàn bộ pass.
 
 ```bash
-git add scripts/calibrate_voice.py README.md .claude/skills/video-translator/SKILL.md config/local_mac.yaml
+git add scripts/calibrate_voice.py README.md .claude/skills/video-translator/SKILL.md config/local_mac.yaml config/local_gpu.yaml pyproject.toml uv.lock
 git commit -m "docs: fully-local Vietnamese dubbing guide and voice calibration script"
 ```
 
@@ -2681,6 +2744,6 @@ git commit -m "docs: fully-local Vietnamese dubbing guide and voice calibration 
 
 ## Self-review (đã chạy khi viết plan)
 
-- **Spec coverage M1:** lỗi có sẵn (Task 1, 8, 11 `max_subtitle_chars: 0`), LLM local (2, 3), vi_text (4), voice bank (5), F5-vi (6), budget + shorten (7), fitter + 2 pha (9), hard_trim (10), orchestrator/CLI/preset/resume (11), E2E + calibrate (12). Chưa thuộc M1 (đúng theo spec): Demucs stems (M2), diarization/gender (M3), WhisperX/vLLM (M4), quality gate (M5) — mỗi cái sẽ có plan riêng.
+- **Spec coverage M1:** lỗi có sẵn (Task 1, 8, 11 `max_subtitle_chars: 0`), LLM local (2, 3), vi_text (4), voice bank (5), VieNeu (6), budget + shorten (7), fitter + 2 pha (9), hard_trim (10), orchestrator/CLI/preset/resume (11), E2E + calibrate + extras (12). Amendment 2026-09-02: TTS = VieNeu-TTS v3 Turbo, LLM = Gemma 4 (quyết định user); F5-TTS-vi và vinorm bị loại. Chưa thuộc M1 (đúng theo spec): Demucs stems (M2), diarization/gender (M3), WhisperX/vLLM (M4), quality gate (M5) — mỗi cái sẽ có plan riêng.
 - **Placeholder scan:** không còn TBD/TODO; mọi bước có code hoặc lệnh cụ thể.
-- **Type consistency:** `synth(text, voice, out_path, speed) -> str` dùng nhất quán ở Task 6, 9, 11, 12; `shorten_fn(src, cur, budget_syll, budget_s) -> str` ở Task 7, 9, 11; `budgets: list[tuple[float, int]]` ở Task 7, 9, 11; `Segment.source_text` ở Task 1, 8, 9, 11.
+- **Type consistency:** `synth(text, voice, out_path, speed) -> str` (vieneu bỏ qua speed) dùng nhất quán ở Task 6, 9, 11, 12; `shorten_fn(src, cur, budget_syll, budget_s) -> str` ở Task 7, 9, 11; `budgets: list[tuple[float, int]]` ở Task 7, 9, 11; `Segment.source_text` ở Task 1, 8, 9, 11.
