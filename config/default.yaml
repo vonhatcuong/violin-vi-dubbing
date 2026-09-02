@@ -81,6 +81,15 @@ merge:
   min_duration: 0.0      # seconds — glue same-speaker segments shorter than this to a neighbour (0 = off; local presets use 2.5)
   max_subtitle_chars: 20 # split sub-sentences longer than this at clause punctuation (、，；,;)
 
+# ── 4b. Duration fitter (local dubbing; off by default) ─────
+fit:
+  enabled: false
+  sec_per_syllable: 0.21      # seconds per Vietnamese syllable at TTS speed 1.0 — calibrate per voice (spike M0a)
+  overrun_tolerance: 1.30     # ask the LLM to shorten only when est > budget × this
+  max_shorten_rounds: 2
+  max_pause_borrow_s: 0.6     # how much of the following pause a sentence may borrow
+  margin_s: 0.05              # keep this gap before the next sentence's onset
+
 # ── 5. Video merge / alignment ──────────────────────────────
 merge_video:
   workers: 16           # concurrent ffmpeg processes per job (each ~300MB RAM); raise this on slower instances via prod.yaml
