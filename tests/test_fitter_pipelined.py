@@ -1,3 +1,4 @@
+import dataclasses
 import threading, time
 from dataclasses import replace
 import numpy as np, soundfile as sf
@@ -38,13 +39,24 @@ def test_pipelined_overlaps_and_preserves_order(tmp_path):
 
 
 def test_pipelined_matches_sequential(tmp_path):
-    segs = _segs(5); slots = fitter.compute_slots(segs, 12.0, 0.6, 0.05)
-    p = Probe()
-    translated, units = fitter.run_pipelined(segs, slots, p.translate, lambda *a: "", None, p.synth_batch, str(tmp_path / "p"), FCFG, batch_size=2, workers=1)
-    seq = p.translate(segs, [])
-    u2 = fitter.build_units(seq, slots, {}, "nam-1"); fitter.fit_text(u2, lambda *a: "", FCFG)
-    (tmp_path / "s").mkdir(); fitter.fit_audio(u2, None, str(tmp_path / "s"), FCFG, synth_batch=p.synth_batch)
-    assert [(u.seg_id, u.text, round(u.tts_dur, 2)) for u in units] == [(u.seg_id, u.text, round(u.tts_dur, 2)) for u in u2]
+    def _strip(u):
+        d = dataclasses.asdict(u)
+        d.pop("tts_path")
+        return d
+
+    for i, extra in enumerate([{}, {"min_fill": 0.6, "min_tempo": 0.85}]):
+        fcfg = dict(FCFG, _default_voice="nam-1", **extra)
+        segs = _segs(5); slots = fitter.compute_slots(segs, 12.0, 0.6, 0.05)
+        p = Probe()
+        translated, units = fitter.run_pipelined(
+            segs, slots, p.translate, lambda *a: "", None, p.synth_batch,
+            str(tmp_path / f"p{i}"), fcfg, batch_size=2, workers=1,
+        )
+        seq = p.translate(segs, [])
+        u2 = fitter.build_units(seq, slots, {}, "nam-1")
+        fitter.fit_text(u2, lambda *a: "", fcfg)
+        fitter.fit_audio(u2, None, str(tmp_path / f"s{i}"), fcfg, synth_batch=p.synth_batch)
+        assert [_strip(u) for u in units] == [_strip(u) for u in u2]
 
 
 def test_pipelined_propagates_translate_errors(tmp_path):
@@ -53,3 +65,46 @@ def test_pipelined_propagates_translate_errors(tmp_path):
     import pytest
     with pytest.raises(RuntimeError, match="llm down"):
         fitter.run_pipelined(segs, slots, boom, lambda *a: "", None, Probe().synth_batch, str(tmp_path), FCFG, batch_size=2, workers=2)
+
+
+def test_pipelined_on_batch_called_per_batch_growing_and_sorted(tmp_path):
+    segs = _segs(6); slots = fitter.compute_slots(segs, 14.0, 0.6, 0.05)
+    p = Probe()
+    calls = []
+
+    def on_batch(translated_so_far, units_so_far, total):
+        calls.append((
+            [s.id for s in translated_so_far],
+            [u.seg_id for u in units_so_far],
+            total,
+        ))
+
+    translated, units = fitter.run_pipelined(
+        segs, slots, p.translate, lambda *a: "", None, p.synth_batch,
+        str(tmp_path), FCFG, batch_size=2, workers=2, on_batch=on_batch,
+    )
+    assert len(calls) == 3  # 6 segments / batch_size 2 = 3 batches
+    prev_ids: set[int] = set()
+    for tr_ids, unit_ids, total in calls:
+        assert tr_ids == sorted(tr_ids) and unit_ids == sorted(unit_ids) and tr_ids == unit_ids
+        assert prev_ids < set(tr_ids)  # strictly growing, superset of previous
+        prev_ids = set(tr_ids)
+        assert total == 6
+    assert prev_ids == set(range(6))
+
+
+def test_pipelined_on_batch_exception_propagates(tmp_path):
+    segs = _segs(6); slots = fitter.compute_slots(segs, 14.0, 0.6, 0.05)
+    p = Probe()
+
+    def on_batch(translated_so_far, units_so_far, total):
+        raise RuntimeError("cancelled")
+
+    import pytest
+    start = time.time()
+    with pytest.raises(RuntimeError, match="cancelled"):
+        fitter.run_pipelined(
+            segs, slots, p.translate, lambda *a: "", None, p.synth_batch,
+            str(tmp_path), FCFG, batch_size=2, workers=2, on_batch=on_batch,
+        )
+    assert time.time() - start < 5

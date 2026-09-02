@@ -227,6 +227,12 @@ def dub_video(
                     budgets=batch_budgets,
                 )
 
+            def _on_pipelined_batch(partial_translated: list[Segment], partial_units: list, total: int) -> None:
+                # Mirrors the sequential branch: check cancellation and persist the
+                # translated checkpoint incrementally instead of only at the end.
+                _check_cancel(is_cancelled)
+                _persist_segments(partial_translated, output_video_path, "translated")
+
             synth = make_synthesizer(language=lang_code, emotion=style.tts_emotion)
             synth_batch = make_batch_synthesizer(language=lang_code, emotion=style.tts_emotion)
             translated, units = fitter.run_pipelined(
@@ -234,6 +240,7 @@ def dub_video(
                 dict(fit_cfg, _voice_map=voice_map, _default_voice=effective_voice),
                 batch_size=int(cfg["translation"].get("batch_size", 32)),
                 workers=int(cfg["translation"].get("parallel_batches", 1)),
+                on_batch=_on_pipelined_batch,
             )
             tracker.record_step(f"Translation + TTS + fit (pipelined, {tts_label})")
             _persist_segments(translated, output_video_path, "translated")

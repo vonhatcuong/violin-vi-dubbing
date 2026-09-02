@@ -93,3 +93,16 @@ def test_fit_pipelined_path_skips_translate_segments_and_writes_artifacts(monkey
         assert [s.text for s in result.aligned_segments] == ["Chào. Thế giới."]
         assert (out.with_suffix(".fit.units.json")).exists()
         assert (out.with_suffix(".fitted.segments.json")).exists()
+
+        call = run_pipelined.call_args
+        fcfg_arg = call.args[7]
+        assert fcfg_arg["_voice_map"] == {}
+        assert fcfg_arg["_default_voice"] == "nam-1"
+        assert call.kwargs["batch_size"] == cfg["translation"]["batch_size"]
+        assert call.kwargs["workers"] == cfg["translation"]["parallel_batches"]
+        on_batch = call.kwargs["on_batch"]
+        assert on_batch is not None
+
+        partial = [Segment(id=0, start=0.0, end=2.0, text="Partial.", source_text="Hello.")]
+        on_batch(partial, [], 1)
+        assert (out.with_suffix(".translated.segments.json")).exists()

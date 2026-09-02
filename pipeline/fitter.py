@@ -234,6 +234,7 @@ def run_pipelined(
     fcfg: dict,
     batch_size: int,
     workers: int = 2,
+    on_batch: Callable[[list[Segment], list[DubUnit], int], None] | None = None,
 ) -> tuple[list[Segment], list[DubUnit]]:
     """Translate batch N+1 while batch N is being shortened and synthesized.
 
@@ -241,6 +242,13 @@ def run_pipelined(
     calling thread consumes finished batches (completion order), runs the
     LLM shortening pass and TTS for that batch, and results are reassembled
     by segment id. Errors from any batch propagate.
+
+    When `on_batch` is given, it is called once per completed batch (right
+    after that batch's `fit_audio` finishes) with the translated segments and
+    units accumulated so far — both sorted by `seg_id` — and the total
+    segment count. Exceptions raised by `on_batch` propagate out of here too
+    (this is how callers hook cancellation and incremental checkpoints into
+    the pipelined phase).
     """
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
     voice_map = fcfg.get("_voice_map") or {}
@@ -267,6 +275,13 @@ def run_pipelined(
                 fit_audio(units, synth, out_dir, fcfg, synth_batch=synth_batch)
                 for u in units: units_all[u.seg_id] = u
                 print(f"      [pipeline] {len(units_all)}/{len(segments)} units done")
+                if on_batch is not None:
+                    ids_so_far = sorted(units_all)
+                    on_batch(
+                        [translated_all[i] for i in ids_so_far],
+                        [units_all[i] for i in ids_so_far],
+                        len(segments),
+                    )
     ids = sorted(units_all)
     return [translated_all[i] for i in ids], [units_all[i] for i in ids]
 
