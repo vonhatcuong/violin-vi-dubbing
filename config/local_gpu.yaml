@@ -1,7 +1,8 @@
 # NVIDIA GPU preset — FULLY LOCAL. Same stages as local_mac.yaml on CUDA.
 # Tested on Vast.ai 2× RTX 3090: Ollama on one GPU, ASR/TTS on the other.
-#   CUDA_VISIBLE_DEVICES=1 OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_FLASH_ATTENTION=1 ollama serve
+#   CUDA_VISIBLE_DEVICES=1 OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KEEP_ALIVE=30m ollama serve
 #     (without OLLAMA_CONTEXT_LENGTH Ollama defaults gemma4:31b to a 262k context and spills half the model to CPU → 3 tok/s)
+#     (OLLAMA_KEEP_ALIVE=30m keeps the 19 GB model resident between pipeline stages instead of a cold reload after 5 min idle)
 #   uv sync --extra local-gpu
 #   uv pip install "torch==2.8.0" "torchaudio==2.8.0" --index-url https://download.pytorch.org/whl/cu128   # VieNeu GPU engine
 #   ollama pull gemma4:31b            # Q4, ~19 GB — fits a 24 GB card
@@ -36,6 +37,7 @@ translation:
 merge:
   max_subtitle_chars: 0
   min_duration: 2.5
+  max_duration: 15                      # sentence-sized units: run-on lecture speech otherwise yields 15–20 s units and coarse sync
 
 fit:
   enabled: true

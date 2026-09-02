@@ -41,6 +41,7 @@ translation:
 merge:
   max_subtitle_chars: 0                 # keep whole sentences as TTS units
   min_duration: 2.5                     # glue sub-2.5 s fragments to a neighbour
+  max_duration: 15                      # sentence-sized units: run-on lecture speech otherwise yields 15–20 s units and coarse sync
 
 fit:
   enabled: true

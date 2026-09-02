@@ -164,6 +164,7 @@ A starter `config/prod.yaml` is included for public deployments. It adds upload 
 
 - **Fit stage** — after TTS, a syllable-budget fitter shortens translations that overrun their time slot and re-speeds/pause-borrows the audio to line up with the source timing. Per-unit details (budget, shortened text, measured overrun) are written to `<output>.fit.units.json`; pass `--no-fit` to disable the stage and keep the raw TTS timing.
 - **Ollama context length** — on a 24 GB GPU, set `OLLAMA_CONTEXT_LENGTH=8192` when serving `gemma4:31b`; otherwise Ollama defaults to a much larger context and spills part of the model to CPU.
+- **Keep Ollama warm** — set `OLLAMA_KEEP_ALIVE=30m` when running `ollama serve`; otherwise Ollama unloads the model after 5 minutes idle and the next stage pays a cold reload (tens of seconds for a 19 GB model).
 - **Disable hidden thinking** — `translation.reasoning_effort: none` in the config stops Gemma 4's hidden reasoning pass, which is roughly 10× faster for translation.
 - **GPU torch build** — the VieNeu GPU engine needs a CUDA build of torch, installed separately after `uv sync --extra local-gpu`:
 

@@ -197,10 +197,10 @@ def _try_batch(
             f"[{i}] ({sec:.1f}s, ≤{syl} syllables): {json.dumps(t, ensure_ascii=False)}"
             for i, (t, (sec, syl)) in enumerate(zip(texts, budgets))
         )
-        budget_block = _prompts.load("translate", "budget_block")
+        length_block = _prompts.load("translate", "budget_block")
     else:
         numbered = "\n".join(f"[{i}]: {json.dumps(t, ensure_ascii=False)}" for i, t in enumerate(texts))
-        budget_block = ""
+        length_block = _prompts.load("translate", "length_block_free", target_language=target_language)
 
     fmt = dict(
         source_language=source_language,
@@ -209,7 +209,7 @@ def _try_batch(
         numbered_segments=numbered,
         style_directives=style_directives,
         asr_corrections_block=_asr_corrections_block(),
-        budget_block=budget_block,
+        length_block=length_block,
     )
     if style_directives:
         system_msg = _prompts.load("translate", "batch_system_styled", **fmt)
