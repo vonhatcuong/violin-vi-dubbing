@@ -2967,3 +2967,216 @@ Run: `uv run python -m pytest -q` → toàn bộ pass (+2).
 git add prompts/translate.yaml pipeline/translator.py config/local_mac.yaml config/local_gpu.yaml README.md tests/test_translator_budget.py
 git commit -m "feat(translator): fill the syllable budget instead of the 0.85x rule; sentence-sized units; keep Ollama warm"
 ```
+
+---
+
+### Task 15: Phụ đề tiếng Anh (ngôn ngữ gốc) khớp thời gian thật của video xuất — `--subtitle-lang source`
+
+**Yêu cầu user (2026-09-02):** phụ đề hiện trên video là **tiếng Anh** (bản gốc), không phải tiếng Việt, và mốc thời gian theo **thời gian thực tế của video xuất**.
+
+**Thiết kế:** giữ lại danh sách câu ASR gốc (trước khi gộp thành unit); sau merge, dựng bản đồ thời gian piecewise-linear từ timeline nguồn → timeline output (đơn vị = các unit đã đưa vào `build_aligned_video`, gap được merger copy 1:1 nên ngoài unit là offset thuần); áp bản đồ lên từng câu gốc để ra phụ đề tiếng Anh khớp video xuất (kể cả khi video bị giãn ≤ 8 %). Burn-in dùng SRT nên cũng ra tiếng Anh. Transcript `.transcript.txt` vẫn là bản Việt.
+
+**Files:**
+- Create: `pipeline/timemap.py`
+- Modify: `pipeline/merger.py` (dòng tạo `new_segments` trong `build_aligned_video`: thêm `source_text=seg.source_text`)
+- Modify: `pipeline/orchestrator.py` (`DubOptions.subtitle_lang`, giữ `raw_sentences`, chọn segment cho phụ đề), `main.py` (`--subtitle-lang`), `config/default.yaml` (khối `subtitles`), `config/local_mac.yaml` + `config/local_gpu.yaml` (`subtitles.language: source`; header GPU: chọn card bằng UUID), `README.md` (1 đoạn + ghi chú UUID), `.claude/skills/video-translator/SKILL.md` (frontmatter/Decisions còn "Edge-TTS" → sửa thành VieNeu)
+- Test: `tests/test_timemap.py`, `tests/test_orchestrator_subtitles.py`
+
+**Interfaces:**
+- `timemap.build_time_map(src: list[Segment], out: list[Segment]) -> Callable[[float], float]` — `src[i]`/`out[i]` là cùng unit trước/sau merger (cùng id, cùng thứ tự, `src` không chồng lấn); ngoài các unit: offset bằng chênh lệch tích luỹ; danh sách rỗng → identity.
+- `DubOptions.subtitle_lang: str | None = None` (`None` → `cfg["subtitles"]["language"]`; giá trị `"target" | "source"`).
+- CLI: `--subtitle-lang {source,target}`.
+- Config: `subtitles.language: target` (default.yaml), `source` (2 preset local).
+
+- [ ] **Step 1: Viết test thất bại**
+
+`tests/test_timemap.py`:
+
+```python
+import pytest
+
+from pipeline.timemap import build_time_map
+from pipeline.transcriber import Segment
+
+
+def _s(i, a, b):
+    return Segment(id=i, start=a, end=b, text="x")
+
+
+def test_identity_when_nothing_changed():
+    f = build_time_map([_s(0, 1.0, 3.0), _s(1, 4.0, 6.0)], [_s(0, 1.0, 3.0), _s(1, 4.0, 6.0)])
+    for t in (0.0, 1.0, 2.5, 3.5, 6.0, 9.0):
+        assert f(t) == pytest.approx(t)
+
+
+def test_stretched_unit_maps_linearly_and_shifts_the_rest():
+    src = [_s(0, 2.0, 4.0), _s(1, 5.0, 6.0)]
+    out = [_s(0, 2.0, 5.0), _s(1, 6.0, 7.0)]   # unit 0 stretched ×1.5, gap 4→5 copied 1:1 → 5→6
+    f = build_time_map(src, out)
+    assert f(1.0) == pytest.approx(1.0)      # before any unit: unchanged
+    assert f(3.0) == pytest.approx(3.5)      # inside unit 0: linear
+    assert f(4.0) == pytest.approx(5.0)
+    assert f(4.5) == pytest.approx(5.5)      # in the gap: offset +1
+    assert f(5.5) == pytest.approx(6.5)      # inside unit 1 (not stretched)
+    assert f(8.0) == pytest.approx(9.0)      # after the last unit: offset +1
+
+
+def test_empty_units_is_identity():
+    f = build_time_map([], [])
+    assert f(12.3) == pytest.approx(12.3)
+```
+
+`tests/test_orchestrator_subtitles.py`:
+
+```python
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
+from pipeline import config as pipeline_config
+from pipeline.orchestrator import DubOptions, dub_video
+from pipeline.transcriber import Segment
+
+
+def test_source_subtitles_use_english_sentences_retimed_to_output():
+    pipeline_config.load()
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "out.mp4"; out.write_bytes(b"video")
+        srt = Path(tmp) / "out.srt"
+        tts = Path(tmp) / "seg.wav"; tts.write_bytes(b"wav")
+        raw = [Segment(id=0, start=0.0, end=2.0, text="Hello there."),
+               Segment(id=1, start=2.5, end=4.0, text="Second one.")]
+        translated = [Segment(id=0, start=0.0, end=2.0, text="Xin chào.", source_text="Hello there."),
+                      Segment(id=1, start=2.5, end=4.0, text="Câu hai.", source_text="Second one.")]
+        # merger stretched unit 0 by 1 s; the 0.5 s gap is copied, unit 1 shifts by +1
+        aligned = [Segment(id=0, start=0.0, end=3.0, text="Xin chào.", source_text="Hello there."),
+                   Segment(id=1, start=3.5, end=5.0, text="Câu hai.", source_text="Second one.")]
+
+        with patch("pipeline.orchestrator.make_translation_client"), \
+             patch("pipeline.orchestrator.make_transcription_client"), \
+             patch("pipeline.orchestrator.extract_audio", return_value=str(Path(tmp) / "a.wav")), \
+             patch("pipeline.orchestrator.get_video_duration", return_value=6.0), \
+             patch("pipeline.orchestrator.ensure_video_input", return_value="input.mp4"), \
+             patch("pipeline.orchestrator.transcribe", return_value=raw), \
+             patch("pipeline.orchestrator.translate_segments", return_value=translated), \
+             patch("pipeline.orchestrator.synthesize_segments", return_value=[str(tts), str(tts)]), \
+             patch("pipeline.orchestrator.prepare_merge", return_value=object()), \
+             patch("pipeline.orchestrator.build_gap_chunks"), \
+             patch("pipeline.orchestrator.build_aligned_video", return_value=aligned):
+            result = dub_video("input.mp4", str(out),
+                               DubOptions(target_language="Vietnamese", subtitles=True, subtitle_lang="source"),
+                               output_srt_path=str(srt))
+
+        text = srt.read_text(encoding="utf-8")
+        assert "Hello there." in text and "Second one." in text
+        assert "Xin chào" not in text
+        assert "00:00:00,000 --> 00:00:03,000" in text
+        assert "00:00:03,500 --> 00:00:05,000" in text
+        # transcript stays Vietnamese
+        assert "Xin chào." in Path(result.transcript_path).read_text(encoding="utf-8")
+
+
+def test_target_subtitles_remain_default():
+    pipeline_config.load()
+    assert DubOptions(target_language="Vietnamese").subtitle_lang is None
+    assert pipeline_config.get()["subtitles"]["language"] == "target"
+```
+
+- [ ] **Step 2: Chạy test, xác nhận thất bại**
+
+Run: `uv run python -m pytest tests/test_timemap.py tests/test_orchestrator_subtitles.py -v`
+Expected: FAIL — `ModuleNotFoundError: pipeline.timemap`, `TypeError: DubOptions.__init__() got an unexpected keyword argument 'subtitle_lang'`.
+
+- [ ] **Step 3: `pipeline/timemap.py`**
+
+```python
+"""Piecewise-linear map from source-video time to output-video time.
+
+The merger may slow a unit's video (≤ 8 %) or trim it, so output timestamps
+drift from the source. Units before/after the merger share ids and order,
+and the gaps between units are copied 1:1, so the map is linear inside each
+unit and a pure offset elsewhere. Used to re-time original-language ASR
+sentences onto the dubbed video for subtitles.
+"""
+
+from __future__ import annotations
+
+from typing import Callable
+
+from .transcriber import Segment
+
+
+def build_time_map(src: list[Segment], out: list[Segment]) -> Callable[[float], float]:
+    knots: list[tuple[float, float]] = []
+    for s, o in zip(src, out):
+        knots.append((float(s.start), float(o.start)))
+        knots.append((float(s.end), float(o.end)))
+
+    def f(t: float) -> float:
+        if not knots or t <= knots[0][0]:
+            return float(t)
+        for (x0, y0), (x1, y1) in zip(knots, knots[1:]):
+            if x0 <= t <= x1:
+                if x1 - x0 < 1e-9:
+                    return y1
+                return y0 + (t - x0) * (y1 - y0) / (x1 - x0)
+        x_last, y_last = knots[-1]
+        return y_last + (t - x_last)
+
+    return f
+```
+
+- [ ] **Step 4: Nối vào pipeline**
+
+`pipeline/merger.py`, trong `build_aligned_video` chỗ `new_segments.append(Segment(id=seg.id, start=new_start, end=new_time, text=seg.text, speaker=seg.speaker,))` → thêm `source_text=seg.source_text`.
+
+`pipeline/orchestrator.py`:
+- import: `from dataclasses import asdict, dataclass, field, replace` và `from .timemap import build_time_map`.
+- `DubOptions` thêm `subtitle_lang: str | None = None   # "target" (translated) | "source" (original ASR sentences re-timed); None → config subtitles.language`.
+- Ngay sau khi có `segments` (cả nhánh `segments_override` và nhánh transcribe), TRƯỚC `merge_continuous_segments`: `raw_sentences = [replace(s) for s in segments]`.
+- Sau `build_aligned_video`, thay đoạn tạo subtitle:
+
+```python
+        sub_lang = (opts.subtitle_lang or cfg.get("subtitles", {}).get("language", "target")).lower()
+        if sub_lang == "source":
+            tmap = build_time_map(translated, aligned_segments)
+            subtitle_segments = [
+                Segment(id=i, start=tmap(s.start), end=tmap(s.end), text=s.text, speaker=s.speaker)
+                for i, s in enumerate(raw_sentences)
+            ]
+        else:
+            subtitle_segments = aligned_segments
+        subtitle_paths: dict[str, str] = {}
+        if output_srt_path is not None and opts.subtitles:
+            subtitle_paths = generate_subtitle_files(subtitle_segments, output_srt_path, formats=opts.subtitle_formats)
+```
+
+(`translated` ở đây là chính danh sách đã truyền vào `build_aligned_video` ở cả 2 nhánh.) `generate_transcript(aligned_segments, ...)` giữ nguyên (bản Việt).
+
+`main.py`: `parser.add_argument("--subtitle-lang", choices=["source", "target"], default=None, help="Subtitle language: source = original sentences re-timed to the output video, target = translated text (default: config subtitles.language)")`; `translate_video(..., subtitle_lang=...)` → `DubOptions(..., subtitle_lang=subtitle_lang)`.
+
+`config/default.yaml` thêm sau khối `merge_video`:
+
+```yaml
+# ── 5b. Subtitles ───────────────────────────────────────────
+subtitles:
+  language: target   # target = translated text on the output timeline | source = original-language ASR sentences re-timed to the output video
+```
+
+`config/local_mac.yaml` và `config/local_gpu.yaml`: thêm
+
+```yaml
+subtitles:
+  language: source                      # English subtitles under the Vietnamese dub, timed to the output video
+```
+
+`config/local_gpu.yaml` header: thay dòng `CUDA_VISIBLE_DEVICES=1 ... ollama serve` bằng hướng dẫn chọn card theo UUID: `nvidia-smi -L` → `CUDA_VISIBLE_DEVICES=GPU-<uuid-A> ... ollama serve` và `CUDA_VISIBLE_DEVICES=GPU-<uuid-B> uv run main.py ...` (chú thích: chỉ số 0/1 có thể đổi thứ tự giữa các tiến trình trên 2 card giống nhau → OOM). README: một câu tương tự trong phần GPU + một câu mô tả `--subtitle-lang`. `SKILL.md`: thay "Edge-TTS" trong frontmatter description và mục Decisions bằng "VieNeu-TTS v3 Turbo".
+
+- [ ] **Step 5: Chạy test, commit**
+
+Run: `uv run python -m pytest -q` → toàn bộ pass (+5).
+
+```bash
+git add pipeline/timemap.py pipeline/merger.py pipeline/orchestrator.py main.py config/default.yaml config/local_mac.yaml config/local_gpu.yaml README.md .claude/skills/video-translator/SKILL.md tests/test_timemap.py tests/test_orchestrator_subtitles.py
+git commit -m "feat(subtitles): source-language subtitles re-timed to the output video (--subtitle-lang)"
+```
