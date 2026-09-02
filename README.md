@@ -2,6 +2,8 @@
 
 **Open-source Video Translation Skill.**
 
+> **Fork notice:** this repository is a fork of [shang-zhu/violin](https://github.com/shang-zhu/violin) (MIT, by Shang Zhu and Qinghong Lin) adapted into a fully-local English → Vietnamese dubbing stack (faster-whisper → Gemma 4 via Ollama → VieNeu-TTS v3 Turbo, duration fitter, word-timed English subtitles). Upstream is tracked as the `upstream` git remote; see `config/local_mac.yaml` / `config/local_gpu.yaml` and the plan under `docs/superpowers/`.
+
 [🌐 Live demo](https://www.violin-ai.com) · [📝 Blog post](https://www.together.ai/blog/violin-open-source-translation-skill) · [📜 MIT License](https://github.com/shang-zhu/violin/blob/main/LICENSE)
 
 <p align="left">
