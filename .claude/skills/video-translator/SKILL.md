@@ -15,13 +15,12 @@ Run these silently first. Abort if the CLI/input check fails, or if the key for 
 ```bash
 command -v violin                 # 1. CLI on PATH
 test -f "<input>"                 # 2. Input exists
-printenv TOGETHER_API_KEY         # 3a. Default config key
-printenv OLLAMA_API_KEY           # 3b. local_mac.yaml key
+printenv TOGETHER_API_KEY         # 3. Default config key (config/local_mac.yaml needs none)
 ```
 
 If `violin` is missing: tell the user to `uv tool install violin`, then `violin --install-skill` to refresh this skill file. Do not auto-install.
 
-For URL inputs, skip the `test -f` check. Only require the key for the config being used. If using `config/local_mac.yaml`, check `OLLAMA_API_KEY` instead of `TOGETHER_API_KEY`. Edge-TTS itself does not need a key.
+For URL inputs, skip the `test -f` check. Only require the key for the config being used. `config/local_mac.yaml` needs no key — it runs Ollama on localhost (`ollama pull gemma4:12b-mlx`, no API key) for translation plus VieNeu-TTS v3 Turbo (weights auto-download on first run) for voice. Pass `--no-fit` to disable the duration fitter and keep raw TTS timing.
 
 ## Decisions
 

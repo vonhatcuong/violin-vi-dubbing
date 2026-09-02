@@ -32,12 +32,14 @@ def main() -> int:
     ap.add_argument("--config", default="config/local_mac.yaml")
     args = ap.parse_args()
     pipeline_config.load(args.config)
+    tail_s = float(pipeline_config.get().get("tts", {}).get("sentence_tail_silence_ms", 250)) / 1000.0
+    print(f"subtracting {tail_s:.3f}s tail silence per clip (tts.sentence_tail_silence_ms)")
     synth = make_synthesizer(language="vi")
     total_s, total_syl = 0.0, 0
     with tempfile.TemporaryDirectory() as tmp:
         for i, text in enumerate(SENTENCES):
             path = synth(text, args.voice, f"{tmp}/c{i}.wav", 1.0)
-            dur = wav_duration(path) - 0.25   # subtract sentence tail silence
+            dur = max(wav_duration(path) - tail_s, 0.01)   # subtract sentence tail silence
             syl = count_syllables(text)
             total_s += dur
             total_syl += syl
