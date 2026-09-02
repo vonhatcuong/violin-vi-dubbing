@@ -27,7 +27,7 @@ from .merger import burn_subtitles, build_aligned_video, build_gap_chunks, gener
 from .styles import StyleProfile, resolve as resolve_style
 from .subtitles import split_into_cues
 from .timemap import build_time_map
-from .transcriber import Segment, merge_continuous_segments, split_into_sentences, transcribe
+from .transcriber import Segment, merge_continuous_segments, split_into_sentences, split_long_segments, transcribe
 from .translator import shorten_segment, translate_segments
 from .tts import make_batch_synthesizer, make_synthesizer, native_voices_for, synthesize_segments
 
@@ -134,6 +134,10 @@ def dub_video(
         fit_enabled = bool(fit_cfg.get("enabled", False)) if opts.fit is None else bool(opts.fit)
 
         segments = merge_continuous_segments(segments)
+        tcfg = cfg.get("transcription", {})
+        segments = split_long_segments(
+            segments, float(tcfg.get("max_sentence_seconds", 0) or 0), float(tcfg.get("min_piece_seconds", 2.5)),
+        )
         _persist_segments(segments, output_video_path, "transcribed")
 
         budgets = None

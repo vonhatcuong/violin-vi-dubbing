@@ -108,6 +108,11 @@ def _deduplicate_fragment(prev_text: str, frag_text: str) -> str:
     return frag_text
 
 
+def _concat_words(a: "Segment", b: "Segment") -> list | None:
+    """Concatenate word-level timestamps from *a* and *b* when both carry them."""
+    return (a.words + b.words) if (a.words and b.words) else None
+
+
 def _absorb_short_segments(segments: list["Segment"], min_duration: float, max_gap: float, max_duration: float) -> list["Segment"]:
     """Merge segments shorter than *min_duration* into a same-speaker neighbour.
 
@@ -120,7 +125,8 @@ def _absorb_short_segments(segments: list["Segment"], min_duration: float, max_g
 
     def _join(a: "Segment", b: "Segment") -> "Segment":
         return Segment(id=a.id, start=a.start, end=b.end, text=(a.text + " " + b.text).strip(),
-                       speaker=a.speaker, source_text=(a.source_text + " " + b.source_text).strip())
+                       speaker=a.speaker, source_text=(a.source_text + " " + b.source_text).strip(),
+                       words=_concat_words(a, b))
 
     out: list[Segment] = [segments[0]]
     for seg in segments[1:]:
@@ -177,6 +183,7 @@ def merge_continuous_segments(
                 end=seg.end,
                 text=merged_text,
                 speaker=current.speaker,
+                words=_concat_words(current, seg),
             )
         else:
             merged.append(current)
@@ -190,6 +197,60 @@ def merge_continuous_segments(
         seg.id = i
 
     return merged
+
+
+# Clause-ending punctuation used to pick split points inside over-long merged
+# sentences (English/Latin plus CJK full-width variants).
+_CLAUSE_END = (",", ";", ":", ".", "!", "?", "。", "，")
+
+
+def _rebuild(words: list[list], template: "Segment") -> "Segment":
+    """Build a Segment from a slice of word tuples, copying speaker/source_text from *template*."""
+    return Segment(id=0, start=float(words[0][1]), end=float(words[-1][2]),
+                   text=" ".join(w[0] for w in words).strip(), speaker=template.speaker,
+                   source_text=template.source_text, words=[list(w) for w in words])
+
+
+def _split_one(seg: "Segment", max_s: float, min_piece: float) -> list["Segment"]:
+    """Recursively split *seg* at the best clause boundary until every piece fits within max_s."""
+    words = seg.words or []
+    if (seg.end - seg.start) <= max_s or len(words) < 2:
+        return [seg]
+    n = len(words)
+    mid = (float(words[0][1]) + float(words[-1][2])) / 2.0
+    cands = []
+    for i in range(1, n):
+        left_dur = float(words[i - 1][2]) - float(words[0][1])
+        right_dur = float(words[-1][2]) - float(words[i][1])
+        if left_dur < min_piece or right_dur < min_piece:
+            continue
+        punct = str(words[i - 1][0]).endswith(_CLAUSE_END)
+        gap = float(words[i][1]) - float(words[i - 1][2])
+        dist = abs(float(words[i][1]) - mid)
+        cands.append((0 if punct else 1, -gap if not punct else 0.0, dist, i))
+    if not cands:
+        return [seg]
+    cands.sort()
+    i = cands[0][3]
+    left, right = _rebuild(words[:i], seg), _rebuild(words[i:], seg)
+    return _split_one(left, max_s, min_piece) + _split_one(right, max_s, min_piece)
+
+
+def split_long_segments(segments: list["Segment"], max_seconds: float, min_piece_seconds: float = 2.5) -> list["Segment"]:
+    """Split sentences longer than *max_seconds* at clause punctuation (nearest the middle) or the largest word gap.
+
+    Only segments carrying word-level timestamps can be split. Applied after
+    merging so a single ASR "sentence" glued from run-on lecture speech is
+    broken back into TTS-sized units without losing sync.
+    """
+    if max_seconds <= 0:
+        return segments
+    out: list[Segment] = []
+    for seg in segments:
+        out.extend(_split_one(seg, max_seconds, min_piece_seconds))
+    for i, s in enumerate(out):
+        s.id = i
+    return out
 
 
 def _is_valid(s: dict | object) -> bool:
