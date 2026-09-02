@@ -106,3 +106,34 @@ def test_fit_pipelined_path_skips_translate_segments_and_writes_artifacts(monkey
         partial = [Segment(id=0, start=0.0, end=2.0, text="Partial.", source_text="Hello.")]
         on_batch(partial, [], 1)
         assert (out.with_suffix(".translated.segments.json")).exists()
+
+
+def test_split_long_segments_forwards_long_gap_seconds(monkeypatch):
+    cfg = pipeline_config.load()
+    monkeypatch.setitem(cfg["transcription"], "max_sentence_seconds", 12)
+    monkeypatch.setitem(cfg["transcription"], "long_gap_seconds", 3.5)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "out.mp4"
+        out.write_bytes(b"video")
+        tts = Path(tmp) / "seg.wav"
+        tts.write_bytes(b"wav")
+        segments = [Segment(id=0, start=0.0, end=1.0, text="Hello")]
+        translated = [Segment(id=0, start=0.0, end=1.0, text="Xin chao")]
+
+        with patch("pipeline.orchestrator.make_translation_client"), \
+             patch("pipeline.orchestrator.make_transcription_client"), \
+             patch("pipeline.orchestrator.extract_audio", return_value=str(Path(tmp) / "audio.wav")), \
+             patch("pipeline.orchestrator.get_video_duration", return_value=1.0), \
+             patch("pipeline.orchestrator.ensure_video_input", return_value="input.mp4"), \
+             patch("pipeline.orchestrator.transcribe", return_value=segments), \
+             patch("pipeline.orchestrator.translate_segments", return_value=translated), \
+             patch("pipeline.orchestrator.synthesize_segments", return_value=[str(tts)]), \
+             patch("pipeline.orchestrator.prepare_merge", return_value=object()), \
+             patch("pipeline.orchestrator.build_gap_chunks"), \
+             patch("pipeline.orchestrator.build_aligned_video", return_value=translated), \
+             patch("pipeline.orchestrator.split_long_segments", side_effect=lambda segs, *a, **k: segs) as split:
+            dub_video("input.mp4", str(out), DubOptions(target_language="Vietnamese", subtitles=False))
+
+        split.assert_called_once()
+        assert split.call_args.kwargs["long_gap_seconds"] == 3.5

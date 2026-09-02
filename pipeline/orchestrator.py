@@ -180,6 +180,8 @@ def dub_video(
                 num_speakers=num_speakers,
                 max_speakers=int(dcfg.get("max_speakers", 4)),
                 threshold=float(dcfg.get("threshold", 0.65)),
+                min_cluster_segments=int(dcfg.get("min_cluster_segments", 3)),
+                min_cluster_seconds=float(dcfg.get("min_cluster_seconds", 3.0)),
                 hf_token=os.environ.get(hf_token_env) if hf_token_env else None,
                 model=dcfg.get("model", "speechbrain/spkrec-ecapa-voxceleb"),
                 pyannote_model=dcfg.get("pyannote_model", "pyannote/speaker-diarization-community-1"),
@@ -217,6 +219,7 @@ def dub_video(
         tcfg = cfg.get("transcription", {})
         segments = split_long_segments(
             segments, float(tcfg.get("max_sentence_seconds", 0) or 0), float(tcfg.get("min_piece_seconds", 2.5)),
+            long_gap_seconds=float(tcfg.get("long_gap_seconds", 2.0)),
         )
         _persist_segments(segments, output_video_path, "transcribed")
 

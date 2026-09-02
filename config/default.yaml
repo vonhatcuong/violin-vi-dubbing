@@ -60,11 +60,11 @@ tts:
 # ── 3b. Voice bank (fixed voices for zero-shot local TTS, e.g. vieneu) ──
 voices:
   bank: "assets/voices/vi"   # directory with catalog.yaml + reference WAVs
-  default_male: "Thanh Bình"   # VieNeu preset name or voice-bank name
+  default_male: "Phạm Tuyên"   # VieNeu preset name or voice-bank name
   default_female: "Ngọc Huyền" # VieNeu preset name or voice-bank name
   gender_detect: false         # true: guess each diarized speaker's gender from F0 (median autocorrelation pitch)
   speaker_voices:               # round-robin pool for diarized speakers with no voice_map entry / no gender match
-    - "Thanh Bình"
+    - "Phạm Tuyên"
     - "Ngọc Huyền"
     - "Minh Đức"
     - "Trúc Ly"

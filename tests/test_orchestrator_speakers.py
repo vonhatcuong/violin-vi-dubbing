@@ -219,6 +219,38 @@ def test_num_speakers_falls_back_to_diarization_config_not_one(monkeypatch):
         assert dl.call_args.kwargs["num_speakers"] == 3
 
 
+def test_min_cluster_settings_forwarded_from_config(monkeypatch):
+    cfg = pipeline_config.load()
+    monkeypatch.setitem(cfg["diarization"], "enabled", True)
+    monkeypatch.setitem(cfg["diarization"], "min_cluster_segments", 5)
+    monkeypatch.setitem(cfg["diarization"], "min_cluster_seconds", 4.5)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "out.mp4"
+        out.write_bytes(b"video")
+        tts = Path(tmp) / "seg.wav"
+        tts.write_bytes(b"wav")
+        segments = [Segment(id=0, start=0.0, end=1.0, text="Hello")]
+        translated = [Segment(id=0, start=0.0, end=1.0, text="Xin chao")]
+
+        with patch("pipeline.orchestrator.make_translation_client"), \
+             patch("pipeline.orchestrator.make_transcription_client"), \
+             patch("pipeline.orchestrator.extract_audio", return_value=str(Path(tmp) / "a.wav")), \
+             patch("pipeline.orchestrator.get_video_duration", return_value=1.0), \
+             patch("pipeline.orchestrator.ensure_video_input", return_value="input.mp4"), \
+             patch("pipeline.orchestrator.transcribe", return_value=segments), \
+             patch("pipeline.orchestrator.diarizer.label_segments", return_value=["SPEAKER_00"]) as dl, \
+             patch("pipeline.orchestrator.translate_segments", return_value=translated), \
+             patch("pipeline.orchestrator.synthesize_segments", return_value=[str(tts)]), \
+             patch("pipeline.orchestrator.prepare_merge", return_value=object()), \
+             patch("pipeline.orchestrator.build_gap_chunks"), \
+             patch("pipeline.orchestrator.build_aligned_video", return_value=translated):
+            dub_video("input.mp4", str(out), DubOptions(target_language="Vietnamese", subtitles=False))
+
+        dl.assert_called_once()
+        assert dl.call_args.kwargs["min_cluster_segments"] == 5
+        assert dl.call_args.kwargs["min_cluster_seconds"] == 4.5
+
+
 def test_num_speakers_none_when_diarization_config_unset_and_speakers_default(monkeypatch):
     cfg = pipeline_config.load()
     monkeypatch.setitem(cfg["diarization"], "enabled", True)

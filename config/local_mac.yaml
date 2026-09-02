@@ -34,6 +34,7 @@ transcription:
   local_device: auto
   local_compute_type: auto
   max_sentence_seconds: 12   # split run-on ASR sentences at clause punctuation / silences
+  long_gap_seconds: 2.0      # a silence this long inside one sentence is always a cut
 
 translation:
   batch_size: 16
@@ -46,7 +47,7 @@ merge:
 
 fit:
   enabled: true
-  sec_per_syllable: 0.22                 # measured with scripts/calibrate_voice.py (Thanh Bình 0.217, Ngọc Huyền 0.230, Minh Đức 0.270)
+  sec_per_syllable: 0.23                 # measured with scripts/calibrate_voice.py (Phạm Tuyên 0.227, Thanh Bình 0.230, Ngọc Huyền 0.230, Minh Đức 0.270)
   min_fill: 0.6                         # VieNeu speaks faster than the lecturer (~73 % measured fill); slow under-filled units gently
   pipelined: true
 
@@ -55,7 +56,7 @@ vieneu:
   precision: int8
 
 voices:
-  default_male: "Thanh Bình"            # VieNeu presets (Bắc, natural); see pipeline/tts_vieneu.py for all 20
+  default_male: "Phạm Tuyên"            # VieNeu presets (Bắc, natural); see pipeline/tts_vieneu.py for all 20
   default_female: "Ngọc Huyền"
 
 tts:

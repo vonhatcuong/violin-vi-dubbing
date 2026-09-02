@@ -33,9 +33,10 @@ transcription:
   local_device: cuda
   local_compute_type: float16
   max_sentence_seconds: 12               # split run-on ASR sentences at clause punctuation / silences
+  long_gap_seconds: 2.0                  # a silence this long inside one sentence is always a cut
 
 translation:
-  batch_size: 32
+  batch_size: 16                         # 16: fewer count-mismatch retries than 32 and finer translate/TTS overlap (measured 2m30 vs 3m48 on a 21-min lecture)
   parallel_batches: 2
   response_format: json_object
 
@@ -46,7 +47,7 @@ merge:
 
 fit:
   enabled: true
-  sec_per_syllable: 0.22
+  sec_per_syllable: 0.23                 # measured with scripts/calibrate_voice.py (Phạm Tuyên 0.227, Thanh Bình 0.230)
   min_fill: 0.6                         # VieNeu speaks faster than the lecturer (~73 % measured fill); slow under-filled units gently
   pipelined: true
 
@@ -56,7 +57,7 @@ vieneu:
   max_batch_size: 32
 
 voices:
-  default_male: "Thanh Bình"
+  default_male: "Phạm Tuyên"
   default_female: "Ngọc Huyền"
   gender_detect: true    # guess each diarized speaker's gender from F0 (GPU has headroom; use with --speakers auto/N)
 
