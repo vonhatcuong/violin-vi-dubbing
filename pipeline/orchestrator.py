@@ -25,6 +25,7 @@ from .languages import language_code
 from .llm_client import make_transcription_client, make_translation_client
 from .merger import burn_subtitles, build_aligned_video, build_gap_chunks, generate_subtitle_files, generate_transcript, prepare_merge
 from .styles import StyleProfile, resolve as resolve_style
+from .subtitles import split_into_cues
 from .timemap import build_time_map
 from .transcriber import Segment, merge_continuous_segments, split_into_sentences, transcribe
 from .translator import shorten_segment, translate_segments
@@ -110,6 +111,7 @@ def dub_video(
             _emit(on_progress, 2, f"Using source captions ({len(segments_override)} segments)…")
             segments = segments_override
             raw_sentences = [replace(s) for s in segments]
+            _persist_segments(raw_sentences, output_video_path, "sentences")
             tracker.record_step("Source captions")
         else:
             _emit(on_progress, 1, "Extracting audio…")
@@ -124,6 +126,7 @@ def dub_video(
             _emit(on_progress, 2, f"Transcribing with Whisper Large v3… (duration: {total_duration:.0f}s)")
             segments = transcribe(audio_path, transcription_client)
             raw_sentences = [replace(s) for s in segments]
+            _persist_segments(raw_sentences, output_video_path, "sentences")
             tracker.record_step("Transcription (Whisper)")
 
         lang_code = language_code(opts.target_language)
@@ -236,10 +239,17 @@ def dub_video(
 
         sub_lang = (opts.subtitle_lang or cfg.get("subtitles", {}).get("language", "target")).lower()
         if sub_lang == "source":
+            scfg = cfg.get("subtitles", {})
+            cues = split_into_cues(
+                raw_sentences,
+                max_chars=scfg.get("max_chars", 84),
+                max_duration=float(scfg.get("max_duration", 6.0)),
+                min_duration=float(scfg.get("min_duration", 1.0)),
+            )
             tmap = build_time_map(translated, aligned_segments)
             subtitle_segments = [
                 Segment(id=i, start=tmap(s.start), end=tmap(s.end), text=s.text, speaker=s.speaker)
-                for i, s in enumerate(raw_sentences)
+                for i, s in enumerate(cues)
             ]
         else:
             subtitle_segments = aligned_segments

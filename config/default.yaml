@@ -107,7 +107,11 @@ merge_video:
 
 # ── 5b. Subtitles ───────────────────────────────────────────
 subtitles:
-  language: target   # target = translated text on the output timeline | source = original-language ASR sentences re-timed to the output video
+  language: target       # target = translated text on the output timeline | source = original-language ASR sentences re-timed to the output video
+  max_chars: 84          # per cue (≈ 2 lines × 42) when splitting source sentences into word-timed cues
+  max_duration: 6.0      # seconds per cue
+  min_duration: 1.0      # cues shorter than this are merged into the previous one when the text fits
+  burn_style: "FontName=Arial,FontSize=22,Outline=2,Shadow=0,MarginV=28"   # ffmpeg subtitles force_style for --burn-subtitles
 
 # ── 6. API server ───────────────────────────────────────────
 api:

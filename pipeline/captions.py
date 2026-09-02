@@ -150,7 +150,8 @@ def _segment_auto_words(words: list[_Word], max_pause: float = 0.5,
         text = text[0].upper() + text[1:]
         if text[-1] not in ".!?…":
             text += "."
-        segs.append(Segment(id=len(segs), start=cur[0].start, end=cur[-1].end, text=text))
+        segs.append(Segment(id=len(segs), start=cur[0].start, end=cur[-1].end, text=text,
+                            words=[[w.text, w.start, w.end] for w in cur]))
 
     for i, w in enumerate(words):
         cur.append(w)

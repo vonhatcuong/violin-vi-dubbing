@@ -76,6 +76,7 @@ def load_segments(path: str) -> tuple[list[Segment], str]:
             text=s["text"],
             speaker=s.get("speaker", "SPEAKER_00"),
             source_text=s.get("source_text", ""),
+            words=s.get("words"),
         )
         for s in data["segments"]
     ]

@@ -720,10 +720,14 @@ def generate_transcript(segments: list[Segment], output_path: str) -> str:
 def burn_subtitles(input_video_path: str, subtitle_path: str, output_video_path: str) -> str:
     """Burn subtitles into a copy of the video using ffmpeg's subtitles filter."""
     escaped = subtitle_path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    vf = f"subtitles='{escaped}'"
+    style = _conf.get().get("subtitles", {}).get("burn_style", "")
+    if style:
+        vf += f":force_style='{style}'"
     subprocess.run([
         FFMPEG_EXE,
         "-i", input_video_path,
-        "-vf", f"subtitles='{escaped}'",
+        "-vf", vf,
         "-c:a", "copy",
         "-movflags", "+faststart",
         "-y", output_video_path,

@@ -85,6 +85,7 @@ class Segment:
     text: str
     speaker: str = "SPEAKER_00"
     source_text: str = ""   # original-language text once `text` holds a translation
+    words: list | None = None   # [[text, start, end], ...] from ASR, kept on raw sentences for subtitle cues
 
 
 def _deduplicate_fragment(prev_text: str, frag_text: str) -> str:
@@ -277,7 +278,9 @@ def _split_words_into_sentences(words: list, offset: float = 0.0) -> list[Segmen
             end = _g(current_words[-1], "end") + offset
             text = " ".join((_g(w2, "word") or "").strip() for w2 in current_words).strip()
             if text:
-                sentences.append(Segment(id=len(sentences), start=start, end=end, text=text))
+                sentences.append(Segment(id=len(sentences), start=start, end=end, text=text,
+                                          words=[[(_g(w2, "word") or "").strip(), _g(w2, "start") + offset, _g(w2, "end") + offset]
+                                                 for w2 in current_words]))
             current_words = []
 
     # Flush any trailing words that didn't end with punctuation.
@@ -286,7 +289,9 @@ def _split_words_into_sentences(words: list, offset: float = 0.0) -> list[Segmen
         end = _g(current_words[-1], "end") + offset
         text = " ".join((_g(w2, "word") or "").strip() for w2 in current_words).strip()
         if text:
-            sentences.append(Segment(id=len(sentences), start=start, end=end, text=text))
+            sentences.append(Segment(id=len(sentences), start=start, end=end, text=text,
+                                      words=[[(_g(w2, "word") or "").strip(), _g(w2, "start") + offset, _g(w2, "end") + offset]
+                                             for w2 in current_words]))
 
     return sentences
 
