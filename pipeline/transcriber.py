@@ -1,6 +1,8 @@
 """Transcribe audio with Whisper — provider chosen via config (Together or OpenAI)."""
 
 import re
+import shutil
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
@@ -453,6 +455,20 @@ def _dedup_overlap(segments: list[Segment]) -> list[Segment]:
     return out
 
 
+
+def _remove_chunk_dir(chunks: list[tuple[str, float]]) -> None:
+    """Delete the scratch dir split_audio() made for the chunks (~100 MB per hour of audio).
+
+    Guarded hard: only a directory named ``audiochunk_*`` that lives directly under the system temp
+    dir is ever removed — anything else (a caller-supplied dir, a relative path, the CWD) is left alone.
+    """
+    if not chunks:
+        return
+    d = Path(chunks[0][0]).resolve().parent
+    tmp_root = Path(tempfile.gettempdir()).resolve()
+    if d.name.startswith("audiochunk_") and d.parent == tmp_root and d.is_dir():
+        shutil.rmtree(d, ignore_errors=True)
+
 def transcribe(
     audio_path: str,
     client: Any,
@@ -487,12 +503,15 @@ def transcribe(
         print(f"      Chunk {idx + 1}/{len(chunks)} transcribed ({len(segs)} segments)")
         return idx, segs
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_do, i, path, offset)
-                   for i, (path, offset) in enumerate(chunks)]
-        for f in as_completed(futures):
-            idx, segs = f.result()
-            results[idx] = segs
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_do, i, path, offset)
+                       for i, (path, offset) in enumerate(chunks)]
+            for f in as_completed(futures):
+                idx, segs = f.result()
+                results[idx] = segs
+    finally:
+        _remove_chunk_dir(chunks)
 
     all_segments: list[Segment] = []
     for i in range(len(chunks)):

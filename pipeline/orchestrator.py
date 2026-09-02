@@ -121,6 +121,7 @@ def dub_video(
     )
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="vidtrans_"))
+    plan = None
     try:
         tracker.start_timer()
 
@@ -423,6 +424,9 @@ def dub_video(
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+        plan_tmp = getattr(plan, "tmp_dir", None)  # merger intermediates would survive a failed merge otherwise
+        if plan_tmp:
+            shutil.rmtree(plan_tmp, ignore_errors=True)
 
     return DubResult(
         aligned_segments=aligned_segments,

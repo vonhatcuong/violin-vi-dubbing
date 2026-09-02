@@ -2,6 +2,7 @@
 
 import re
 import subprocess
+import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -474,6 +475,7 @@ def build_aligned_video(
         _build_original_audio_track(video_path, audio_plan, tmp_dir,
                                     original_audio_path, chunk_workers)
 
+    shutil.rmtree(tmp_dir, ignore_errors=True)  # gap/seg .ts intermediates: ~2-3 GB per hour of video
     return new_segments
 
 
