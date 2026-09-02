@@ -2,6 +2,7 @@
 
 import subprocess
 import tempfile
+import json
 from pathlib import Path
 
 import ffmpeg
@@ -23,6 +24,43 @@ def extract_audio(video_path: str, output_path: str | None = None) -> str:
         .overwrite_output()
         .run(quiet=True, cmd=FFMPEG_EXE)
     )
+    return output_path
+
+
+def has_video_stream(media_path: str) -> bool:
+    """Return True when *media_path* has at least one video stream."""
+    result = subprocess.run([
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "stream=codec_type",
+        "-of", "json",
+        media_path,
+    ], check=True, capture_output=True, text=True)
+    data = json.loads(result.stdout or "{}")
+    return any(stream.get("codec_type") == "video" for stream in data.get("streams", []))
+
+
+def ensure_video_input(input_path: str, output_path: str) -> str:
+    """Return a video path suitable for the merger.
+
+    Video inputs are returned unchanged. Audio-only inputs are wrapped in a
+    black MP4 with the original audio track so the existing video merge and
+    subtitle burn stages can run unchanged.
+    """
+    if has_video_stream(input_path):
+        return input_path
+
+    subprocess.run([
+        FFMPEG_EXE,
+        "-f", "lavfi", "-i", "color=c=black:s=1280x720:r=30",
+        "-i", input_path,
+        "-shortest",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        "-y", output_path,
+    ], check=True, capture_output=True)
     return output_path
 
 

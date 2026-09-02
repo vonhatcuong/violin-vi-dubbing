@@ -8,7 +8,17 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from api.models import JobStatus
-from api.storage import get_job, original_audio_path, output_srt_path, output_video_path, voiceover_video_path
+from api.storage import (
+    burned_video_path,
+    get_job,
+    original_audio_path,
+    output_srt_path,
+    output_txt_path,
+    output_video_path,
+    output_vtt_path,
+    transcript_path,
+    voiceover_video_path,
+)
 from pipeline.ffmpeg_utils import FFMPEG_EXE
 
 router = APIRouter(prefix="/jobs", tags=["files"])
@@ -130,4 +140,60 @@ def download_srt(job_id: str):
         path=str(path),
         media_type="text/plain; charset=utf-8",
         filename=f"{job_id}.srt",
+    )
+
+
+@router.get("/{job_id}/vtt", response_class=FileResponse)
+def download_vtt(job_id: str):
+    """Download the WebVTT subtitle file."""
+    _assert_done(job_id)
+    path = output_vtt_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="VTT file not found for this job.")
+    return FileResponse(
+        path=str(path),
+        media_type="text/vtt; charset=utf-8",
+        filename=f"{job_id}.vtt",
+    )
+
+
+@router.get("/{job_id}/txt", response_class=FileResponse)
+def download_txt(job_id: str):
+    """Download the plain transcript file."""
+    _assert_done(job_id)
+    path = output_txt_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="TXT transcript file not found for this job.")
+    return FileResponse(
+        path=str(path),
+        media_type="text/plain; charset=utf-8",
+        filename=f"{job_id}.txt",
+    )
+
+
+@router.get("/{job_id}/transcript", response_class=FileResponse)
+def download_transcript(job_id: str):
+    """Download the plain translated transcript without timestamps."""
+    _assert_done(job_id)
+    path = transcript_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Transcript file not found for this job.")
+    return FileResponse(
+        path=str(path),
+        media_type="text/plain; charset=utf-8",
+        filename=f"{job_id}_transcript.txt",
+    )
+
+
+@router.get("/{job_id}/video-burned", response_class=FileResponse)
+def download_burned_video(job_id: str):
+    """Download the dubbed video copy with subtitles burned into the picture."""
+    _assert_done(job_id)
+    path = burned_video_path(job_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Burned-subtitle video not found for this job.")
+    return FileResponse(
+        path=str(path),
+        media_type="video/mp4",
+        filename=f"{job_id}_subtitled.mp4",
     )

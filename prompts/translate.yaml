@@ -14,17 +14,14 @@ batch_user: |
   - Sentence fragments are fine — translate them as-is.
   - Sound natural — write the way a native {target_language} speaker would explain the same idea.
 
-  CRITICAL — keep translations CONCISE so they fit the original speaking time:
-  - Each translation will be voiced as a dub aligned to the source audio's time slot.
-  - The {target_language} version must occupy a SIMILAR SPOKEN DURATION as the source — NOT longer.
-  - Vietnamese / many target languages naturally inflate vs. English; actively counteract this:
-    · Drop redundant qualifiers ("very", "really", "actually", "basically") unless meaning-bearing.
-    · Use the SHORTEST natural equivalent for each phrase.
-    · Prefer single-word verbs over compound expressions when both read naturally.
-    · Omit polite filler ("you know", "I mean", "well") that doesn't carry information.
-    · If a source phrase is verbose ("the way in which we can"), tighten it ("cách").
-  - Target heuristic: translation should be at most 1.15× the syllable count of the source.
-  - It is better to compress phrasing than to lose information.
+  CRITICAL — keep translations SHORT so they fit the original speaking time:
+  - The {target_language} version MUST be SHORTER than the source — not equal, SHORTER.
+  - Vietnamese inflates vs. English; counteract aggressively. Paraphrase, don't transliterate:
+    · Drop filler ("very", "really", "actually", "basically", "well", "you know", "I mean").
+    · Drop redundant clauses ("which is to say", "in other words").
+    · Use shortest natural phrasing — single-word verbs, pronouns over re-naming.
+    · Collapse "in order to" → "để"; "the way in which we can" → "cách"; "be able to" → "có thể".
+  - Target ~0.85× the word count of the source. It is better to lose minor nuance than to overrun.
 
   CRITICAL — no code-switching:
   - The output must be 100% in {target_language}. Do NOT leave any source-language
@@ -72,11 +69,12 @@ batch_user_styled: |
   Style:
   Follow the style instructions in the system message. You may freely rephrase, simplify, or add flair as the style demands — just keep each segment self-contained.
 
-  CRITICAL — concise spoken duration:
-  - Translations will be voiced and aligned to the source audio's time slot.
-  - Match source SPOKEN LENGTH closely; target ≤ 1.15× source syllable count.
-  - Drop filler ("very", "really", "actually", "well", "you know") that doesn't carry meaning.
-  - Pick the shortest natural equivalent. Compress, do not expand.
+  CRITICAL — short spoken duration:
+  - Translation MUST be SHORTER than source — target ~0.85× word count.
+  - Drop filler ("very", "really", "actually", "well", "you know", "I mean", "basically").
+  - Drop redundant clauses; let context carry meaning.
+  - Shortest natural phrasing — single-word verbs, pronouns over re-naming, "để" not "để có thể".
+  - Lose minor nuance to preserve timing.
 
   Segments ({num_segments} total):
   {numbered_segments}

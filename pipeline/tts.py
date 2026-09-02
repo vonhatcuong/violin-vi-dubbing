@@ -29,6 +29,8 @@ def _backend(provider: str | None = None):
         from . import tts_elevenlabs as _imp
     elif p == "openai":
         from . import tts_openai as _imp
+    elif p == "edge":
+        from . import tts_edge as _imp
     elif p == "supertonic":
         from . import tts_supertonic as _imp
     else:
@@ -65,6 +67,10 @@ def _make_client(
         # as its `client` argument.
         from . import tts_supertonic as _sup
         return _sup.get_shared_tts()
+
+    if provider == "edge":
+        # Edge-TTS does not need an API key or persistent SDK client.
+        return None
 
     if provider == "elevenlabs":
         from elevenlabs.client import ElevenLabs

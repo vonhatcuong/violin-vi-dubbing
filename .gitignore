@@ -15,6 +15,9 @@ examples/
 *.log
 jobs/
 
+# Rendered output videos (large)
+output/
+
 # Local-only ops scripts (not shipped with the package or repo)
 scripts/
 

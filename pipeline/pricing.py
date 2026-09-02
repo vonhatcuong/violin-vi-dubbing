@@ -25,6 +25,7 @@ TTS: dict[str, dict[str, float]] = {
     "together":   {"per_m_characters": 65.00},   # Cartesia Sonic 3 ($65/M). Kokoro $4/M, Orpheus $15/M when added.
     "elevenlabs": {"per_m_characters": 165.00},  # eleven_v3 (~$0.165 / 1k chars on Creator tier)
     "openai":     {"per_m_characters": 30.00},   # tts-1-hd ($30/M); tts-1 is $15/M
+    "edge":       {"per_m_characters": 0.00},    # Edge-TTS package, no per-character API billing.
 }
 
 # USD per 1,000,000 tokens (input / output split).

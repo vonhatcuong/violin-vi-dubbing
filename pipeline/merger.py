@@ -625,18 +625,89 @@ def _build_original_audio_track(
     print("      Original audio track ready.")
 
 
-def generate_srt(segments: list[Segment], output_path: str) -> str:
-    def fmt(seconds: float) -> str:
-        h = int(seconds // 3600)
-        m = int((seconds % 3600) // 60)
-        s = int(seconds % 60)
-        ms = int((seconds % 1) * 1000)
-        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+def _format_timestamp(seconds: float, separator: str) -> str:
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{s:02d}{separator}{ms:03d}"
 
+
+def generate_subtitle_files(
+    segments: list[Segment],
+    output_srt_path: str,
+    formats: tuple[str, ...] = ("srt",),
+) -> dict[str, str]:
+    """Write subtitle artifacts next to *output_srt_path*.
+
+    ``output_srt_path`` remains the canonical base path for compatibility with
+    existing callers; VTT and TXT use the same stem.
+    """
+    base = Path(output_srt_path)
+    written: dict[str, str] = {}
+    normalized = tuple(dict.fromkeys(fmt.lower() for fmt in formats))
+
+    if "srt" in normalized:
+        path = base.with_suffix(".srt")
+        with open(path, "w", encoding="utf-8") as f:
+            for idx, seg in enumerate(segments, start=1):
+                f.write(f"{idx}\n")
+                f.write(
+                    f"{_format_timestamp(seg.start, ',')} --> "
+                    f"{_format_timestamp(seg.end, ',')}\n"
+                )
+                f.write(f"{seg.text}\n\n")
+        written["srt"] = str(path)
+
+    if "vtt" in normalized:
+        path = base.with_suffix(".vtt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("WEBVTT\n\n")
+            for seg in segments:
+                f.write(
+                    f"{_format_timestamp(seg.start, '.')} --> "
+                    f"{_format_timestamp(seg.end, '.')}\n"
+                )
+                f.write(f"{seg.text}\n\n")
+        written["vtt"] = str(path)
+
+    if "txt" in normalized:
+        path = base.with_suffix(".txt")
+        with open(path, "w", encoding="utf-8") as f:
+            for seg in segments:
+                f.write(f"[{_format_timestamp(seg.start, '.')}] {seg.text}\n")
+        written["txt"] = str(path)
+
+    unknown = [fmt for fmt in normalized if fmt not in {"srt", "vtt", "txt"}]
+    if unknown:
+        raise ValueError(f"Unsupported subtitle format(s): {', '.join(unknown)}")
+
+    return written
+
+
+def generate_srt(segments: list[Segment], output_path: str) -> str:
+    return generate_subtitle_files(segments, output_path, formats=("srt",))["srt"]
+
+
+def generate_transcript(segments: list[Segment], output_path: str) -> str:
+    """Write plain transcript text without timestamps."""
     with open(output_path, "w", encoding="utf-8") as f:
         for seg in segments:
-            f.write(f"{seg.id + 1}\n")
-            f.write(f"{fmt(seg.start)} --> {fmt(seg.end)}\n")
-            f.write(f"{seg.text}\n\n")
-
+            text = seg.text.strip()
+            if text:
+                f.write(text + "\n")
     return output_path
+
+
+def burn_subtitles(input_video_path: str, subtitle_path: str, output_video_path: str) -> str:
+    """Burn subtitles into a copy of the video using ffmpeg's subtitles filter."""
+    escaped = subtitle_path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    subprocess.run([
+        FFMPEG_EXE,
+        "-i", input_video_path,
+        "-vf", f"subtitles='{escaped}'",
+        "-c:a", "copy",
+        "-movflags", "+faststart",
+        "-y", output_video_path,
+    ], check=True, capture_output=True)
+    return output_video_path

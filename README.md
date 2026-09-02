@@ -10,7 +10,7 @@
 
 <!-- ![demo](assets/outcome.png) -->
 
-Upload a video. Violin transcribes the speech, translates it, synthesizes a native-sounding voice-over in the target language, and remuxes it back into the video — fully aligned, with optional SRT subtitles.
+Paste a video URL or upload a video/audio file. Violin transcribes the speech, translates it, synthesizes a target-language voice-over, aligns the dubbed audio to the source timestamps, and remuxes it into an MP4 with SRT/VTT/TXT subtitles plus a plain transcript.
 
 Available as a **CLI**, a **FastAPI web app**, and a **Claude Code skill**.
 
@@ -19,6 +19,11 @@ Available as a **CLI**, a **FastAPI web app**, and a **Claude Code skill**.
 ## ✨ Features
 
 - **33 target languages** with handpicked native-speaker voices for the 16 most-used ones (Cartesia Sonic 3 + ElevenLabs)
+- **YouTube/URL or file input** — use the web app with a pasted URL, or upload MP4/MOV/MKV/WebM plus MP3/WAV/M4A/FLAC audio files
+- **Timestamp-aligned TTS** — source gaps stay as gaps; each translated segment is placed on the original timeline
+- **Subtitle and transcript outputs** — SRT, VTT, timestamped TXT, plain transcript TXT, and optional burned-subtitle MP4
+- **Local Vietnamese preset** — `config/local_mac.yaml` uses local faster-whisper transcription and Vietnamese Edge-TTS voices
+- **SQLite job history** — processed jobs are mirrored into `jobs/jobs.sqlite` for local history/resume
 - **In-video Q&A** — ask questions about any moment in the dubbed video; answers use nearby subtitles plus sampled frames
 - **Natural-language voice picker** — describe the voice you want, an LLM picks from the catalog
 - **6 style profiles** *(experimental)* — standard / kids / academic / casual / storyteller / news
@@ -76,6 +81,15 @@ cd violin
 uv sync
 cp .env.example .env             # then fill in TOGETHER_API_KEY
 uv run main.py lecture.mp4 lecture_zh.mp4 --language Chinese
+
+# Local Vietnamese workflow: local STT + Edge-TTS, with all subtitle formats
+export OLLAMA_API_KEY=...     # only needed by config/local_mac.yaml translation/chat
+uv sync --extra local
+uv run main.py lecture.mp4 lecture_vi.mp4 \
+  --language Vietnamese \
+  --config config/local_mac.yaml \
+  --subtitle-formats srt,vtt,txt \
+  --burn-subtitles
 ```
 
 To use the `violin` / `violin-api` commands globally while edits to your local source reflect immediately, install editable:
@@ -94,20 +108,20 @@ After this, `violin` / `violin-api` run from your local checkout — edit any fi
 ## 🎬 How Violin works
 
 ```
-Video
+Video / Audio / URL
   │
-  ├─ ffmpeg ─────────────────────► Extract audio (16 kHz WAV)
+  ├─ yt-dlp / ffmpeg ─────────────► Download URL if needed, extract audio (16 kHz WAV)
   │
   ├─ Whisper Large v3 ────────────► Word-level timestamps → sentence segments
   │
   ├─ LLM (DeepSeek V4 Pro by default) ──► Translate each segment, respecting style profile
   │
-  ├─ TTS (Cartesia Sonic 3 by default) ─► Synthesize dubbed audio per segment
+  ├─ TTS (Cartesia / Edge-TTS / etc.) ───► Synthesize dubbed audio per segment
   │
   └─ ffmpeg ─────────────────────► Speed-align video to dubbed audio,
                                     concat with freeze-frame fallback,
                                     single-pass AAC encode the audio track,
-                                    write output mp4 + optional SRT
+                                    write output MP4 + subtitles + transcript
 ```
 
 ---
@@ -128,8 +142,8 @@ models:
     provider: together                  # together | openai
     model: deepseek-ai/DeepSeek-V4-Pro  # together → deepseek-ai/DeepSeek-V4-Pro | openai → gpt-5.5
   tts:
-    provider: together                  # together | elevenlabs | openai
-    model: cartesia/sonic-3             # together → cartesia/sonic-3 | elevenlabs → eleven_v3 | openai → tts-1-hd
+    provider: together                  # together | elevenlabs | openai | edge | supertonic
+    model: cartesia/sonic-3             # edge → edge-tts
 ```
 
 ### Production overrides
@@ -143,6 +157,7 @@ A starter `config/prod.yaml` is included for public deployments. It adds upload 
 | `TOGETHER_API_KEY` | **Recommended** — covers every stage with the default config | Together AI API key |
 | `OPENAI_API_KEY` | Any stage uses `provider: openai` | Covers `whisper-1`, GPT models, and `tts-1` |
 | `ELEVENLABS_API_KEY` | TTS uses `provider: elevenlabs` | ElevenLabs API key |
+| `OLLAMA_API_KEY` | Translation/chat uses `provider: ollama` | Ollama Cloud API key |
 | `CORS_ORIGINS` | Optional | Comma-separated allowed origins (default: `*`) |
 
 > You only need keys for the providers you actually pick. Pure-OpenAI deployments (all stages on `openai`) work too — `OPENAI_API_KEY` alone is enough. Same idea for ElevenLabs.
@@ -176,6 +191,12 @@ See all available styles: `violin --style list`.
 # Basic
 violin lecture.mp4 lecture_es.mp4 --language Spanish
 
+# YouTube / URL input
+violin "https://www.youtube.com/watch?v=..." lecture_vi.mp4 --language Vietnamese --config config/local_mac.yaml
+
+# Audio input also works; output is an MP4 suitable for subtitles/burn-in
+violin podcast.mp3 podcast_vi.mp4 --language Vietnamese --config config/local_mac.yaml
+
 # Pick a style
 violin talk.mp4 talk_zh.mp4 --language Chinese --style kids
 
@@ -184,6 +205,9 @@ violin lecture.mp4 lecture_fr.mp4 --language French --voice "french narrator man
 
 # Skip SRT
 violin lecture.mp4 lecture_ja.mp4 --language Japanese --no-subtitles
+
+# Write SRT/VTT/TXT and a burned-subtitle copy
+violin lecture.mp4 lecture_vi.mp4 --language Vietnamese --subtitle-formats srt,vtt,txt --burn-subtitles
 
 # Full replacement (no original audio underneath)
 violin lecture.mp4 lecture_ko.mp4 --language Korean --no-voiceover
@@ -200,6 +224,8 @@ violin lecture.mp4 lecture_it.mp4 --language Italian --config config/other_api.y
 | `--voice` / `-v` | auto | TTS voice. Defaults to the primary native voice for the target language |
 | `--source-language` | `auto-detect` | Source language hint for translation |
 | `--no-subtitles` | off | Skip SRT generation |
+| `--subtitle-formats` | `srt` | Comma-separated subtitle sidecars: `srt,vtt,txt` |
+| `--burn-subtitles` | off | Also write `<output>_subtitled.mp4` with subtitles burned in |
 | `--voiceover` / `--no-voiceover` | voiceover on | Keep original audio underneath the dub, or full replacement |
 | `--style` / `-s` | `standard` | Style profile name. Use `--style list` to see all |
 | `--config` / `-c` | `config/default.yaml` | Path to a YAML override file |
@@ -215,7 +241,7 @@ violin-api --host 0.0.0.0 --port 8080   # bind everywhere
 violin-api --config config/prod.yaml    # production overrides (requires a git checkout for config/prod.yaml)
 ```
 
-Core flow: `POST /jobs` to start, `GET /jobs/{id}` to poll, `GET /jobs/{id}/video` and `/srt` to download, `POST /jobs/{id}/chat` for in-video Q&A. Full list with request/response schemas at **`/docs`**.
+Core flow: `POST /jobs` or `POST /jobs/from-url` to start, `GET /jobs/{id}` to poll, then download `/video`, `/srt`, `/vtt`, `/txt`, `/transcript`, or `/video-burned`. `GET /jobs/history` reads local SQLite job history. Full list with request/response schemas at **`/docs`**.
 
 ### Example
 
@@ -224,7 +250,9 @@ Core flow: `POST /jobs` to start, `GET /jobs/{id}` to poll, `GET /jobs/{id}/vide
 JOB=$(curl -s -X POST http://localhost:8000/jobs \
   -F "file=@lecture.mp4" \
   -F "language=Spanish" \
-  -F "style=academic" | jq -r .id)
+  -F "style=academic" \
+  -F "subtitle_formats=srt,vtt,txt" \
+  -F "burn_subtitles=true" | jq -r .id)
 
 # Poll
 curl -s http://localhost:8000/jobs/$JOB | jq '{status, progress}'
@@ -232,6 +260,7 @@ curl -s http://localhost:8000/jobs/$JOB | jq '{status, progress}'
 # Download
 curl -OJ http://localhost:8000/jobs/$JOB/video
 curl -OJ http://localhost:8000/jobs/$JOB/srt
+curl -OJ http://localhost:8000/jobs/$JOB/transcript
 ```
 
 Job data lives under `jobs/{id}/`. Set `api.job_ttl_hours` to auto-delete jobs older than N hours (default `0` = disabled; `config/prod.yaml` uses 24h for the public demo).

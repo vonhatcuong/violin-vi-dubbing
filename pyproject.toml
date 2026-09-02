@@ -27,6 +27,7 @@ classifiers = [
 dependencies = [
     "aiofiles>=25.1.0",
     "elevenlabs>=1.0.0",
+    "edge-tts>=7.0.0",
     "fastapi>=0.135.2",
     "ffmpeg-python>=0.2.0",
     "httpx>=0.28.1",
