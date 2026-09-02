@@ -50,7 +50,10 @@ def cluster_embeddings(
     if n == 1 or num_speakers == 1:
         return [0] * n
 
-    from scipy.cluster.hierarchy import fcluster, linkage
+    try:
+        from scipy.cluster.hierarchy import fcluster, linkage
+    except ImportError as exc:  # pragma: no cover - depends on the environment
+        raise ImportError("scipy is required for speaker clustering — install the GPU extras: uv sync --extra local-gpu") from exc
 
     z = linkage(embs, method="average", metric="cosine")
     if num_speakers is not None:
