@@ -163,7 +163,9 @@ A starter `config/prod.yaml` is included for public deployments. It adds upload 
 `config/local_mac.yaml` (Apple Silicon) and `config/local_gpu.yaml` (NVIDIA) run every stage on-device — faster-whisper for transcription, Gemma 4 via Ollama for translation, VieNeu-TTS v3 Turbo for voice synthesis — with no API keys and no network access after the models are downloaded.
 
 - **Fit stage** — after TTS, a syllable-budget fitter shortens translations that overrun their time slot and re-speeds/pause-borrows the audio to line up with the source timing. Per-unit details (budget, shortened text, measured overrun) are written to `<output>.fit.units.json`; pass `--no-fit` to disable the stage and keep the raw TTS timing.
+- **Subtitle language** — both local presets default `subtitles.language: source`, so the SRT/VTT/TXT files (and burned-in subtitles) show the original English sentences re-timed to the dubbed video instead of the Vietnamese translation; pass `--subtitle-lang target` to get translated subtitles instead.
 - **Ollama context length** — on a 24 GB GPU, set `OLLAMA_CONTEXT_LENGTH=8192` when serving `gemma4:31b`; otherwise Ollama defaults to a much larger context and spills part of the model to CPU.
+- **Selecting a GPU by UUID** — with two or more identical cards, pick devices by UUID rather than index: run `nvidia-smi -L` to list each card's `GPU-<uuid>`, then set `CUDA_VISIBLE_DEVICES=GPU-<uuid>` for `ollama serve` and for `uv run main.py` separately — index order (`0`/`1`) can be assigned differently to each process on identical cards, silently putting both on the same GPU and causing an OOM.
 - **Keep Ollama warm** — set `OLLAMA_KEEP_ALIVE=30m` when running `ollama serve`; otherwise Ollama unloads the model after 5 minutes idle and the next stage pays a cold reload (tens of seconds for a 19 GB model).
 - **Disable hidden thinking** — `translation.reasoning_effort: none` in the config stops Gemma 4's hidden reasoning pass, which is roughly 10× faster for translation.
 - **GPU torch build** — the VieNeu GPU engine needs a CUDA build of torch, installed separately after `uv sync --extra local-gpu`:
@@ -235,6 +237,7 @@ violin lecture.mp4 lecture_it.mp4 --language Italian --config config/other_api.y
 | `--source-language` | `auto-detect` | Source language hint for translation |
 | `--no-subtitles` | off | Skip SRT generation |
 | `--subtitle-formats` | `srt` | Comma-separated subtitle sidecars: `srt,vtt,txt` |
+| `--subtitle-lang` | config `subtitles.language` | `source` = original sentences re-timed to the output video, `target` = translated text |
 | `--burn-subtitles` | off | Also write `<output>_subtitled.mp4` with subtitles burned in |
 | `--voiceover` / `--no-voiceover` | voiceover on | Keep original audio underneath the dub, or full replacement |
 | `--style` / `-s` | `standard` | Style profile name. Use `--style list` to see all |

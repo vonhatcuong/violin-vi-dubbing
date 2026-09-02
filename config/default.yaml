@@ -105,6 +105,10 @@ merge_video:
   preset: "ultrafast"
   voiceover_volume: 0.1  # 0.0–1.0 — original audio level for CLI voiceover mode
 
+# ── 5b. Subtitles ───────────────────────────────────────────
+subtitles:
+  language: target   # target = translated text on the output timeline | source = original-language ASR sentences re-timed to the output video
+
 # ── 6. API server ───────────────────────────────────────────
 api:
   jobs_dir: "jobs"

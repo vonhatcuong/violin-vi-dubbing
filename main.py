@@ -80,6 +80,7 @@ def translate_video(
     timings_out: str | None = None,
     prefer_source_captions: bool = True,
     fit: bool | None = None,
+    subtitle_lang: str | None = None,
 ) -> None:
     if style is None:
         style = resolve_style("standard")
@@ -99,6 +100,7 @@ def translate_video(
         voiceover=voiceover,
         bake_voiceover=True,
         subtitles=subtitles,
+        subtitle_lang=subtitle_lang,
         subtitle_formats=subtitle_formats,
         burn_subtitles=burn_subtitles,
         fit=fit,
@@ -177,6 +179,11 @@ def main() -> None:
     parser.add_argument(
         "--subtitle-formats", default="srt",
         help="Comma-separated subtitle formats to write: srt,vtt,txt (default: srt)"
+    )
+    parser.add_argument(
+        "--subtitle-lang", choices=["source", "target"], default=None,
+        help="Subtitle language: source = original sentences re-timed to the output video, "
+             "target = translated text (default: config subtitles.language)"
     )
     parser.add_argument(
         "--burn-subtitles", action="store_true",
@@ -274,6 +281,7 @@ def main() -> None:
         timings_out=args.timings_out,
         prefer_source_captions=prefer_source_captions,
         fit=False if args.no_fit else None,
+        subtitle_lang=args.subtitle_lang,
     )
 
 

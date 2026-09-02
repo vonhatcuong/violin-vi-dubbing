@@ -68,3 +68,6 @@ merge_video:
   max_freeze_s: 0.0
   hard_trim: true
   voiceover_volume: 0.02
+
+subtitles:
+  language: source                      # English subtitles under the Vietnamese dub, timed to the output video

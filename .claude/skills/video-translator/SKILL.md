@@ -1,6 +1,6 @@
 ---
 name: video-translator
-description: Dub a video URL, video file, or audio file into another language and generate subtitles/transcript. Trigger when the user wants to translate / dub / voice-over a YouTube URL or local media file, or generate subtitles for it. Handles common video files plus `.mp3` / `.wav` / `.m4a` / `.flac`. Installs as the `violin` CLI (and `violin-api` for the FastAPI server) via `uv tool install`. Use `config/local_mac.yaml` for the local Vietnamese workflow with faster-whisper + Edge-TTS.
+description: Dub a video URL, video file, or audio file into another language and generate subtitles/transcript. Trigger when the user wants to translate / dub / voice-over a YouTube URL or local media file, or generate subtitles for it. Handles common video files plus `.mp3` / `.wav` / `.m4a` / `.flac`. Installs as the `violin` CLI (and `violin-api` for the FastAPI server) via `uv tool install`. Use `config/local_mac.yaml` for the local Vietnamese workflow with faster-whisper + VieNeu-TTS v3 Turbo.
 allowed-tools: Bash, Read
 ---
 
@@ -25,7 +25,7 @@ For URL inputs, skip the `test -f` check. Only require the key for the config be
 ## Decisions
 
 - **CLI vs API**: single run-and-wait file → CLI (`violin`). Multi-job / HTTP / web UI → API server (`violin-api`); print the command, don't auto-start it.
-- **Vietnamese local default**: if the user says "Vietnamese", "tiếng Việt", or asks for local Edge-TTS, use `--language Vietnamese --config config/local_mac.yaml --subtitle-formats srt,vtt,txt --burn-subtitles`.
+- **Vietnamese local default**: if the user says "Vietnamese", "tiếng Việt", or asks for local VieNeu-TTS v3 Turbo, use `--language Vietnamese --config config/local_mac.yaml --subtitle-formats srt,vtt,txt --burn-subtitles`.
 - **Fully offline Vietnamese**: `--config config/local_mac.yaml` also works fully offline (no API keys) — it runs transcription, translation, and TTS entirely on-device.
 - **Style** (`--style`): default `standard`. Kids content → `kids`, formal/lecture → `academic`, casual → `casual`, dramatic → `storyteller`, news → `news`. Run `violin --style list` if unsure.
 - **Voiceover**: keep default (mix dubbed audio over a quiet original). Use `--no-voiceover` only when the user explicitly says "replace audio entirely".

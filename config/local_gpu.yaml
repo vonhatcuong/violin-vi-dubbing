@@ -1,12 +1,15 @@
 # NVIDIA GPU preset — FULLY LOCAL. Same stages as local_mac.yaml on CUDA.
 # Tested on Vast.ai 2× RTX 3090: Ollama on one GPU, ASR/TTS on the other.
-#   CUDA_VISIBLE_DEVICES=1 OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KEEP_ALIVE=30m ollama serve
+#   nvidia-smi -L                     # list each card's stable UUID, e.g. GPU-1a2b3c4d..., GPU-5e6f7a8b...
+#   CUDA_VISIBLE_DEVICES=GPU-<uuid-A> OLLAMA_CONTEXT_LENGTH=8192 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KEEP_ALIVE=30m ollama serve
 #     (without OLLAMA_CONTEXT_LENGTH Ollama defaults gemma4:31b to a 262k context and spills half the model to CPU → 3 tok/s)
 #     (OLLAMA_KEEP_ALIVE=30m keeps the 19 GB model resident between pipeline stages instead of a cold reload after 5 min idle)
+#     (select cards by UUID, not index — on two identical cards, index 0/1 can be assigned in a different
+#      order to each process, putting Ollama and VieNeu/faster-whisper on the same GPU and causing OOM)
 #   uv sync --extra local-gpu
 #   uv pip install "torch==2.8.0" "torchaudio==2.8.0" --index-url https://download.pytorch.org/whl/cu128   # VieNeu GPU engine
 #   ollama pull gemma4:31b            # Q4, ~19 GB — fits a 24 GB card
-#   uv run main.py video.mp4 video_vi.mp4 --language Vietnamese --config config/local_gpu.yaml
+#   CUDA_VISIBLE_DEVICES=GPU-<uuid-B> uv run main.py video.mp4 video_vi.mp4 --language Vietnamese --config config/local_gpu.yaml
 
 models:
   transcription:
@@ -65,3 +68,6 @@ merge_video:
   max_freeze_s: 0.0
   hard_trim: true
   voiceover_volume: 0.02
+
+subtitles:
+  language: source                      # English subtitles under the Vietnamese dub, timed to the output video

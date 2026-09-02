@@ -13,7 +13,7 @@ import os
 import shutil
 import tempfile
 import threading
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -25,6 +25,7 @@ from .languages import language_code
 from .llm_client import make_transcription_client, make_translation_client
 from .merger import burn_subtitles, build_aligned_video, build_gap_chunks, generate_subtitle_files, generate_transcript, prepare_merge
 from .styles import StyleProfile, resolve as resolve_style
+from .timemap import build_time_map
 from .transcriber import Segment, merge_continuous_segments, split_into_sentences, transcribe
 from .translator import shorten_segment, translate_segments
 from .tts import make_synthesizer, native_voices_for, synthesize_segments
@@ -46,6 +47,7 @@ class DubOptions:
     voiceover: bool = True                # mix original audio with the dub
     bake_voiceover: bool = True           # True (CLI): bake into video; False (API): export separate track
     subtitles: bool = True                # generate SRT alongside the video
+    subtitle_lang: str | None = None      # "target" (translated) | "source" (original ASR sentences re-timed); None → config subtitles.language
     subtitle_formats: tuple[str, ...] = ("srt",)
     burn_subtitles: bool = False          # create a second video with subtitles burned in
     prefer_source_captions: bool = True   # URL inputs: prefer YouTube captions over Whisper
@@ -107,6 +109,7 @@ def dub_video(
         if segments_override is not None:
             _emit(on_progress, 2, f"Using source captions ({len(segments_override)} segments)…")
             segments = segments_override
+            raw_sentences = [replace(s) for s in segments]
             tracker.record_step("Source captions")
         else:
             _emit(on_progress, 1, "Extracting audio…")
@@ -120,6 +123,7 @@ def dub_video(
             _check_cancel(is_cancelled)
             _emit(on_progress, 2, f"Transcribing with Whisper Large v3… (duration: {total_duration:.0f}s)")
             segments = transcribe(audio_path, transcription_client)
+            raw_sentences = [replace(s) for s in segments]
             tracker.record_step("Transcription (Whisper)")
 
         lang_code = language_code(opts.target_language)
@@ -230,13 +234,18 @@ def dub_video(
             original_audio_path=original_audio_path,
         )
 
+        sub_lang = (opts.subtitle_lang or cfg.get("subtitles", {}).get("language", "target")).lower()
+        if sub_lang == "source":
+            tmap = build_time_map(translated, aligned_segments)
+            subtitle_segments = [
+                Segment(id=i, start=tmap(s.start), end=tmap(s.end), text=s.text, speaker=s.speaker)
+                for i, s in enumerate(raw_sentences)
+            ]
+        else:
+            subtitle_segments = aligned_segments
         subtitle_paths: dict[str, str] = {}
         if output_srt_path is not None and opts.subtitles:
-            subtitle_paths = generate_subtitle_files(
-                aligned_segments,
-                output_srt_path,
-                formats=opts.subtitle_formats,
-            )
+            subtitle_paths = generate_subtitle_files(subtitle_segments, output_srt_path, formats=opts.subtitle_formats)
         else:
             output_srt_path = None
 

@@ -387,7 +387,7 @@ def build_aligned_video(
         new_time += chunk_dur
         new_segments.append(Segment(
             id=seg.id, start=new_start, end=new_time,
-            text=seg.text, speaker=seg.speaker,
+            text=seg.text, speaker=seg.speaker, source_text=seg.source_text,
         ))
         prev_end = seg.end
 
