@@ -32,6 +32,83 @@ def test_cluster_fixed_num_speakers_and_cap():
     assert len(set(labels)) <= 2
 
 
+def test_absorb_small_clusters_reassigns_to_nearest_large():
+    rng = np.random.default_rng(1)
+    a = np.array([1.0, 0.0, 0.0])
+    b = np.array([0.0, 1.0, 0.0])
+
+    def near(center, n, noise=0.02):
+        out = []
+        for _ in range(n):
+            v = center + rng.normal(0, noise, size=center.shape)
+            out.append(v / np.linalg.norm(v))
+        return out
+
+    cluster_a = near(a, 5)
+    cluster_b = near(b, 4)
+    singleton_near_a = near(a, 1)
+    small_near_b = near(b, 2)
+
+    embs = np.array(cluster_a + cluster_b + singleton_near_a + small_near_b)
+    labels = [0] * 5 + [1] * 4 + [2] * 1 + [3] * 2
+    durations = [1.0] * 5 + [1.0] * 4 + [1.0] * 1 + [0.45, 0.45]  # small_near_b totals 0.9 s
+
+    out = diarizer.absorb_small_clusters(labels, embs, durations, min_segments=3, min_seconds=3.0)
+
+    assert out[:5] == [0] * 5
+    assert out[5:9] == [1] * 4
+    assert out[9] == 0  # singleton near A absorbed into A
+    assert out[10:12] == [1, 1]  # 2-member cluster near B absorbed into B
+
+
+def test_absorb_small_clusters_all_small_returns_unchanged():
+    embs = np.array([[1.0, 0.0], [0.95, 0.05], [0.0, 1.0], [0.05, 0.95]])
+    labels = [0, 0, 1, 1]
+    durations = [10.0, 10.0, 10.0, 10.0]  # long enough, but each cluster has only 2 members
+    out = diarizer.absorb_small_clusters(labels, embs, durations, min_segments=3, min_seconds=3.0)
+    assert out == labels
+
+
+def test_absorb_small_clusters_min_seconds_alone_triggers():
+    rng = np.random.default_rng(2)
+    a = np.array([1.0, 0.0, 0.0])
+    b = np.array([0.0, 1.0, 0.0])
+    cluster_a = [v / np.linalg.norm(v) for v in (a + rng.normal(0, 0.01, 3) for _ in range(5))]
+    cluster_b = [v / np.linalg.norm(v) for v in (b + rng.normal(0, 0.01, 3) for _ in range(3))]
+
+    embs = np.array(cluster_a + cluster_b)
+    labels = [0] * 5 + [1] * 3
+    # cluster 1 has 3 members (not < min_segments) but only 1.2 s total (< min_seconds)
+    durations = [2.0] * 5 + [0.4] * 3
+
+    out = diarizer.absorb_small_clusters(labels, embs, durations, min_segments=3, min_seconds=3.0)
+    assert out == [0] * 5 + [0, 0, 0]
+
+
+def test_absorb_small_clusters_min_segments_alone_triggers():
+    rng = np.random.default_rng(3)
+    a = np.array([1.0, 0.0, 0.0])
+    b = np.array([0.0, 1.0, 0.0])
+    cluster_a = [v / np.linalg.norm(v) for v in (a + rng.normal(0, 0.01, 3) for _ in range(5))]
+    cluster_b = [v / np.linalg.norm(v) for v in (b + rng.normal(0, 0.01, 3) for _ in range(2))]
+
+    embs = np.array(cluster_a + cluster_b)
+    labels = [0] * 5 + [1] * 2
+    # cluster 1 has 20 s total (not < min_seconds) but only 2 members (< min_segments)
+    durations = [2.0] * 5 + [10.0] * 2
+
+    out = diarizer.absorb_small_clusters(labels, embs, durations, min_segments=3, min_seconds=3.0)
+    assert out == [0] * 5 + [0, 0]
+
+
+def test_absorb_small_clusters_single_cluster_unchanged():
+    embs = np.array([[1.0, 0.0], [0.9, 0.1], [1.0, 0.0]])
+    labels = [0, 0, 0]
+    durations = [0.1, 0.1, 0.1]
+    out = diarizer.absorb_small_clusters(labels, embs, durations, min_segments=3, min_seconds=3.0)
+    assert out == labels
+
+
 def test_relabel_by_first_appearance():
     assert diarizer.relabel_by_first_appearance([7, 7, 2, 7, 2, 9]) == [
         "SPEAKER_00",
@@ -109,3 +186,33 @@ def test_label_segments_ecapa_with_fake_encoder(tmp_path, monkeypatch):
     monkeypatch.setattr(diarizer, "_load_ecapa_embedder", fake_loader)
     labels = diarizer.label_segments(str(tmp_path / "a.wav"), segs, backend="ecapa", threshold=0.5)
     assert labels == ["SPEAKER_00"] * 3 + ["SPEAKER_01"] * 3
+
+
+def test_label_segments_ecapa_absorbs_small_cluster(tmp_path, monkeypatch):
+    import soundfile as sf
+
+    sr = 16000
+    sf.write(tmp_path / "a.wav", np.zeros(sr * 14, dtype=np.float32), sr)
+    segs = [Segment(id=i, start=i * 2.0, end=i * 2.0 + 1.5, text="s") for i in range(6)]
+    segs.append(Segment(id=6, start=12.5, end=13.0, text="s"))  # 0.5 s spurious segment
+
+    def fake_loader(model, device):
+        # first 3 segs near [1,0] (speaker A), next 3 near [0,1] (speaker B), last near A
+        def embed(wav_crop, sr, t0):
+            if t0 < 6.0:
+                return np.array([1.0, 0.0])
+            elif t0 < 12.0:
+                return np.array([0.0, 1.0])
+            return np.array([0.9, 0.1])
+
+        return embed
+
+    def fake_cluster(embs, num_speakers=None, max_speakers=4, threshold=0.65):
+        # 3 clusters: 0 and 1 are real speakers, 2 is a 0.5 s singleton artefact
+        return [0, 0, 0, 1, 1, 1, 2]
+
+    monkeypatch.setattr(diarizer, "_load_ecapa_embedder", fake_loader)
+    monkeypatch.setattr(diarizer, "cluster_embeddings", fake_cluster)
+
+    labels = diarizer.label_segments(str(tmp_path / "a.wav"), segs, backend="ecapa")
+    assert len(set(labels)) == 2

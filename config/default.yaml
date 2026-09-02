@@ -99,6 +99,8 @@ diarization:
   num_speakers: null                     # fixed speaker count, if known (skips threshold-based clustering)
   max_speakers: 4                        # cap on auto-detected speaker count
   threshold: 0.65                        # cosine-distance cut for agglomerative clustering (ecapa backend)
+  min_cluster_segments: 3                # clusters with fewer segments than this are absorbed into the nearest large cluster (ecapa backend)
+  min_cluster_seconds: 3.0               # clusters with less total speech than this (seconds) are absorbed into the nearest large cluster (ecapa backend)
   model: speechbrain/spkrec-ecapa-voxceleb
   pyannote_model: pyannote/speaker-diarization-community-1
   device: auto

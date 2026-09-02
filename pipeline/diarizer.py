@@ -62,6 +62,56 @@ def cluster_embeddings(
     return [int(x) for x in labels]
 
 
+def absorb_small_clusters(
+    labels: list[int],
+    embs: np.ndarray,
+    durations: list[float],
+    *,
+    min_segments: int = 3,
+    min_seconds: float = 3.0,
+) -> list[int]:
+    """Reassign members of small (likely spurious) clusters into the nearest large cluster.
+
+    A cluster is "small" when it has fewer than `min_segments` members, or the sum of its
+    members' `durations` is below `min_seconds`. Each member of a small cluster is reassigned
+    individually to whichever large cluster's centroid (mean of L2-normalized embeddings,
+    re-normalized) has the highest cosine similarity to that member's embedding; large-cluster
+    ids are left unchanged. If every cluster is small, or there is only one cluster, `labels`
+    is returned unchanged.
+    """
+    unique = sorted(set(labels))
+    if len(unique) <= 1:
+        return labels
+
+    members: dict[int, list[int]] = {lab: [] for lab in unique}
+    for i, lab in enumerate(labels):
+        members[lab].append(i)
+
+    small = {
+        lab
+        for lab, idxs in members.items()
+        if len(idxs) < min_segments or sum(durations[i] for i in idxs) < min_seconds
+    }
+    large = [lab for lab in unique if lab not in small]
+    if not large:
+        return labels
+
+    norm_embs = embs / (np.linalg.norm(embs, axis=1, keepdims=True) + 1e-9)
+
+    centroids = []
+    for lab in large:
+        c = norm_embs[members[lab]].mean(axis=0)
+        centroids.append(c / (np.linalg.norm(c) + 1e-9))
+    centroid_matrix = np.stack(centroids)
+
+    new_labels = list(labels)
+    for lab in small:
+        for i in members[lab]:
+            sims = centroid_matrix @ norm_embs[i]
+            new_labels[i] = large[int(np.argmax(sims))]
+    return new_labels
+
+
 def relabel_by_first_appearance(labels: list[int]) -> list[str]:
     """Map arbitrary cluster ids to `SPEAKER_00`, `SPEAKER_01`, ... in order of first appearance."""
     seen: dict[int, str] = {}
@@ -164,6 +214,8 @@ def _label_ecapa(
     threshold: float,
     model: str,
     device: str,
+    min_cluster_segments: int = 3,
+    min_cluster_seconds: float = 3.0,
 ) -> list[str]:
     import soundfile as sf
 
@@ -191,8 +243,13 @@ def _label_ecapa(
 
     labels: list[str | None] = [None] * len(segments)
     if embs:
+        embs_arr = np.array(embs)
         clustered = cluster_embeddings(
-            np.array(embs), num_speakers=num_speakers, max_speakers=max_speakers, threshold=threshold
+            embs_arr, num_speakers=num_speakers, max_speakers=max_speakers, threshold=threshold
+        )
+        durations = [segments[i].end - segments[i].start for i in valid_idx]
+        clustered = absorb_small_clusters(
+            clustered, embs_arr, durations, min_segments=min_cluster_segments, min_seconds=min_cluster_seconds
         )
         for idx, lab in zip(valid_idx, relabel_by_first_appearance(clustered)):
             labels[idx] = lab
@@ -239,6 +296,8 @@ def label_segments(
     num_speakers: int | None = None,
     max_speakers: int = 4,
     threshold: float = 0.65,
+    min_cluster_segments: int = 3,
+    min_cluster_seconds: float = 3.0,
     hf_token: str | None = None,
     model: str = "speechbrain/spkrec-ecapa-voxceleb",
     pyannote_model: str = "pyannote/speaker-diarization-community-1",
@@ -257,4 +316,6 @@ def label_segments(
         threshold=threshold,
         model=model,
         device=device,
+        min_cluster_segments=min_cluster_segments,
+        min_cluster_seconds=min_cluster_seconds,
     )
