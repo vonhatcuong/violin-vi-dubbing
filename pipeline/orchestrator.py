@@ -150,48 +150,49 @@ def dub_video(
             budgets = fitter.budgets_for(segments, slots, float(fit_cfg.get("sec_per_syllable", 0.21)))
 
         _check_cancel(is_cancelled)
-        _emit(on_progress, 3, f"Translating {len(segments)} segments to {opts.target_language} (style: {style.name})…")
-        translated = translate_segments(
-            segments, opts.target_language, translation_client, opts.source_language,
-            tracker=tracker,
-            style_directives=style.translation_directives,
-            style_temperature=style.temperature,
-            budgets=budgets,
-        )
-        tracker.record_step("Translation (LLM)")
-        _persist_segments(translated, output_video_path, "translated")
-        if not fit_enabled:
-            # Aggressive re-merge → re-split: gives the translator full paragraph
-            # context (better quality) while still producing sentence-level units
-            # for TTS and subtitles (1-to-1 alignment, readable line lengths).
-            translated = merge_continuous_segments(translated, max_duration=float("inf"))
-            translated = split_into_sentences(translated)
 
-        _check_cancel(is_cancelled)
-        effective_voice = _resolve_voice(opts.voice, lang_code, cfg)
-        tts_label = cfg["models"]["tts"]["model"]
-        _emit(on_progress, 4, f"Synthesizing TTS with {tts_label} (voice: {effective_voice})…")
-        tts_dir = tmp_dir / "tts"
-        tts_dir.mkdir()
+        if fit_enabled and fit_cfg.get("pipelined"):
+            # Overlap translation batch N+1 (LLM) with shortening + TTS of batch N
+            # (VieNeu) — different devices, so both run concurrently.
+            effective_voice = _resolve_voice(opts.voice, lang_code, cfg)
+            tts_label = cfg["models"]["tts"]["model"]
+            _emit(on_progress, 3,
+                  f"Translating + synthesizing {len(segments)} segments to {opts.target_language} "
+                  f"(pipelined, style: {style.name})…")
+            tts_dir = tmp_dir / "tts"
+            tts_dir.mkdir()
 
-        mix_volume, original_audio_volume, gap_vol = _voiceover_volumes(opts, cfg)
-
-        if fit_enabled:
-            units = fitter.build_units(translated, slots, {}, effective_voice)
+            mix_volume, original_audio_volume, gap_vol = _voiceover_volumes(opts, cfg)
+            voice_map: dict[str, str] = {}  # Task 24 fills per-speaker voices
 
             def _shorten(src: str, cur: str, budget_syll: int, budget_s: float) -> str:
                 return shorten_segment(src, cur, budget_syll, budget_s, opts.target_language,
                                        translation_client, tracker=tracker,
                                        source_language=opts.source_language)
 
-            fitter.fit_text(units, _shorten, fit_cfg)
+            def _translate_batch(batch: list[Segment], batch_budgets: list[tuple[float, int]]) -> list[Segment]:
+                return translate_segments(
+                    batch, opts.target_language, translation_client, opts.source_language,
+                    tracker=tracker,
+                    style_directives=style.translation_directives,
+                    style_temperature=style.temperature,
+                    budgets=batch_budgets,
+                )
+
             synth = make_synthesizer(language=lang_code, emotion=style.tts_emotion)
             synth_batch = make_batch_synthesizer(language=lang_code, emotion=style.tts_emotion)
-            fitter.fit_audio(units, synth, str(tts_dir), fit_cfg, synth_batch=synth_batch)
+            translated, units = fitter.run_pipelined(
+                segments, slots, _translate_batch, _shorten, synth, synth_batch, str(tts_dir),
+                dict(fit_cfg, _voice_map=voice_map, _default_voice=effective_voice),
+                batch_size=int(cfg["translation"].get("batch_size", 32)),
+                workers=int(cfg["translation"].get("parallel_batches", 1)),
+            )
+            tracker.record_step(f"Translation + TTS + fit (pipelined, {tts_label})")
+            _persist_segments(translated, output_video_path, "translated")
+
             translated, tts_paths = fitter.apply_units(units, translated)
             fitter.save_units(units, Path(output_video_path).with_suffix(".fit.units.json"))
             _persist_segments(translated, output_video_path, "fitted")
-            tracker.record_step(f"TTS + fit ({tts_label})")
             plan = prepare_merge(
                 video_input_path, translated, total_duration,
                 preserve_gap_audio=opts.voiceover,
@@ -201,39 +202,90 @@ def dub_video(
             )
             build_gap_chunks(plan)
         else:
-            plan = prepare_merge(
-                video_input_path, translated, total_duration,
-                preserve_gap_audio=opts.voiceover,
-                mix_volume=mix_volume,
-                original_audio_volume=original_audio_volume,
-                gap_volume=gap_vol,
-            )
-
-            gap_exc: list[Exception] = []
-
-            def _build_gaps():
-                try:
-                    build_gap_chunks(plan)
-                except Exception as e:
-                    gap_exc.append(e)
-
-            gap_thread = threading.Thread(target=_build_gaps, daemon=True)
-            gap_thread.start()
-
-            tts_paths = synthesize_segments(
-                translated, effective_voice, str(tts_dir),
-                language=lang_code,
+            _emit(on_progress, 3, f"Translating {len(segments)} segments to {opts.target_language} (style: {style.name})…")
+            translated = translate_segments(
+                segments, opts.target_language, translation_client, opts.source_language,
                 tracker=tracker,
-                speed=style.tts_speed,
-                emotion=style.tts_emotion,
-                together_api_key=opts.together_api_key,
-                elevenlabs_api_key=opts.elevenlabs_api_key,
-                openai_api_key=opts.openai_api_key,
+                style_directives=style.translation_directives,
+                style_temperature=style.temperature,
+                budgets=budgets,
             )
-            gap_thread.join()
-            if gap_exc:
-                raise gap_exc[0]
-            tracker.record_step(f"TTS ({tts_label})")
+            tracker.record_step("Translation (LLM)")
+            _persist_segments(translated, output_video_path, "translated")
+            if not fit_enabled:
+                # Aggressive re-merge → re-split: gives the translator full paragraph
+                # context (better quality) while still producing sentence-level units
+                # for TTS and subtitles (1-to-1 alignment, readable line lengths).
+                translated = merge_continuous_segments(translated, max_duration=float("inf"))
+                translated = split_into_sentences(translated)
+
+            _check_cancel(is_cancelled)
+            effective_voice = _resolve_voice(opts.voice, lang_code, cfg)
+            tts_label = cfg["models"]["tts"]["model"]
+            _emit(on_progress, 4, f"Synthesizing TTS with {tts_label} (voice: {effective_voice})…")
+            tts_dir = tmp_dir / "tts"
+            tts_dir.mkdir()
+
+            mix_volume, original_audio_volume, gap_vol = _voiceover_volumes(opts, cfg)
+
+            if fit_enabled:
+                units = fitter.build_units(translated, slots, {}, effective_voice)
+
+                def _shorten(src: str, cur: str, budget_syll: int, budget_s: float) -> str:
+                    return shorten_segment(src, cur, budget_syll, budget_s, opts.target_language,
+                                           translation_client, tracker=tracker,
+                                           source_language=opts.source_language)
+
+                fitter.fit_text(units, _shorten, fit_cfg)
+                synth = make_synthesizer(language=lang_code, emotion=style.tts_emotion)
+                synth_batch = make_batch_synthesizer(language=lang_code, emotion=style.tts_emotion)
+                fitter.fit_audio(units, synth, str(tts_dir), fit_cfg, synth_batch=synth_batch)
+                translated, tts_paths = fitter.apply_units(units, translated)
+                fitter.save_units(units, Path(output_video_path).with_suffix(".fit.units.json"))
+                _persist_segments(translated, output_video_path, "fitted")
+                tracker.record_step(f"TTS + fit ({tts_label})")
+                plan = prepare_merge(
+                    video_input_path, translated, total_duration,
+                    preserve_gap_audio=opts.voiceover,
+                    mix_volume=mix_volume,
+                    original_audio_volume=original_audio_volume,
+                    gap_volume=gap_vol,
+                )
+                build_gap_chunks(plan)
+            else:
+                plan = prepare_merge(
+                    video_input_path, translated, total_duration,
+                    preserve_gap_audio=opts.voiceover,
+                    mix_volume=mix_volume,
+                    original_audio_volume=original_audio_volume,
+                    gap_volume=gap_vol,
+                )
+
+                gap_exc: list[Exception] = []
+
+                def _build_gaps():
+                    try:
+                        build_gap_chunks(plan)
+                    except Exception as e:
+                        gap_exc.append(e)
+
+                gap_thread = threading.Thread(target=_build_gaps, daemon=True)
+                gap_thread.start()
+
+                tts_paths = synthesize_segments(
+                    translated, effective_voice, str(tts_dir),
+                    language=lang_code,
+                    tracker=tracker,
+                    speed=style.tts_speed,
+                    emotion=style.tts_emotion,
+                    together_api_key=opts.together_api_key,
+                    elevenlabs_api_key=opts.elevenlabs_api_key,
+                    openai_api_key=opts.openai_api_key,
+                )
+                gap_thread.join()
+                if gap_exc:
+                    raise gap_exc[0]
+                tracker.record_step(f"TTS ({tts_label})")
 
         _check_cancel(is_cancelled)
         _emit(on_progress, 5, "Building aligned video…")

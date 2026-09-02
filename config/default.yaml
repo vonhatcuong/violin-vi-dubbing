@@ -108,6 +108,7 @@ fit:
   batch_chunk: 32   # units per synth_batch call (memory bound; VieNeu batches internally up to vieneu.max_batch_size)
   min_fill: 0.0  # >0: slow speech (atempo ≥ min_tempo, pitch kept) when a unit fills less than this share of its slot; presets 0.6
   min_tempo: 0.85
+  pipelined: false  # translate batch N+1 while TTS batch N runs (two GPUs / GPU + CPU)
 
 # ── 5. Video merge / alignment ──────────────────────────────
 merge_video:

@@ -48,6 +48,7 @@ fit:
   enabled: true
   sec_per_syllable: 0.23
   min_fill: 0.6                         # VieNeu speaks faster than the lecturer (~73 % measured fill); slow under-filled units gently
+  pipelined: true
 
 vieneu:
   backend: auto                         # → PyTorch batched engine on CUDA

@@ -48,6 +48,7 @@ fit:
   enabled: true
   sec_per_syllable: 0.23                # measured on VieNeu presets Phạm Tuyên/Ngọc Huyền (0.225); re-measure with scripts/calibrate_voice.py
   min_fill: 0.6                         # VieNeu speaks faster than the lecturer (~73 % measured fill); slow under-filled units gently
+  pipelined: true
 
 vieneu:
   backend: auto                         # → ONNX on Mac

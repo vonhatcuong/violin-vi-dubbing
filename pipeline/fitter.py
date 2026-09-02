@@ -223,6 +223,54 @@ def apply_units(units: list[DubUnit], segments: list[Segment]) -> tuple[list[Seg
     return out, paths
 
 
+def run_pipelined(
+    segments: list[Segment],
+    slots: list[float],
+    translate_fn: Callable[[list[Segment], list[tuple[float, int]]], list[Segment]],
+    shorten_fn: ShortenFn,
+    synth: SynthFn | None,
+    synth_batch: BatchSynthFn | None,
+    out_dir: str,
+    fcfg: dict,
+    batch_size: int,
+    workers: int = 2,
+) -> tuple[list[Segment], list[DubUnit]]:
+    """Translate batch N+1 while batch N is being shortened and synthesized.
+
+    The translation pool keeps at most `workers` LLM batches in flight; the
+    calling thread consumes finished batches (completion order), runs the
+    LLM shortening pass and TTS for that batch, and results are reassembled
+    by segment id. Errors from any batch propagate.
+    """
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+    voice_map = fcfg.get("_voice_map") or {}
+    default_voice = fcfg.get("_default_voice", "")
+    batches = [segments[i:i + batch_size] for i in range(0, len(segments), batch_size)]
+    slot_by_id = {s.id: sl for s, sl in zip(segments, slots)}
+    sps = float(fcfg.get("sec_per_syllable", 0.21))
+    translated_all: dict[int, Segment] = {}
+    units_all: dict[int, DubUnit] = {}
+    os.makedirs(out_dir, exist_ok=True)
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        pending, next_i = set(), 0
+        while next_i < len(batches) and len(pending) < max(1, workers):
+            b = batches[next_i]; pending.add(pool.submit(translate_fn, b, budgets_for(b, [slot_by_id[s.id] for s in b], sps))); next_i += 1
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            while next_i < len(batches) and len(pending) < max(1, workers):
+                b = batches[next_i]; pending.add(pool.submit(translate_fn, b, budgets_for(b, [slot_by_id[s.id] for s in b], sps))); next_i += 1
+            for fut in done:
+                tr = fut.result()                       # raises translation errors here
+                for s in tr: translated_all[s.id] = s
+                units = build_units(tr, [slot_by_id[s.id] for s in tr], voice_map, default_voice)
+                fit_text(units, shorten_fn, fcfg)
+                fit_audio(units, synth, out_dir, fcfg, synth_batch=synth_batch)
+                for u in units: units_all[u.seg_id] = u
+                print(f"      [pipeline] {len(units_all)}/{len(segments)} units done")
+    ids = sorted(units_all)
+    return [translated_all[i] for i in ids], [units_all[i] for i in ids]
+
+
 def save_units(units: list[DubUnit], path: str | Path) -> None:
     payload = {"count": len(units), "units": [asdict(u) | {"budget_s": round(u.budget_s, 3)} for u in units]}
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
