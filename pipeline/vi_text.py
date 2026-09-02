@@ -1,6 +1,6 @@
 """Vietnamese text frontend for local TTS (F5-TTS-Vietnamese expects lowercase NFC text).
 
-normalize_for_tts:  vinorm (if installed & enabled) → loanword map → numbers/percent
+normalize_for_tts:  NFC → loanword map → vinorm (if installed & enabled) → numbers/percent
                     → lowercase → drop unsupported symbols → collapse spaces.
 count_syllables:    Vietnamese is monosyllabic and space-delimited, so after
                     normalization every alphanumeric token is one syllable.
@@ -19,25 +19,77 @@ except Exception:  # pragma: no cover - depends on platform
 from num2words import num2words
 
 _VI_LETTERS = "a-zA-ZÀ-ỹ"
-_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
-_PERCENT_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
+_PERCENT_RE = re.compile(r"(?<![\w])(-?)(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?|\d+)\s*%(?![\w])")
+_NUMBER_RE = re.compile(r"(?<![\w])(-?)(\d{1,3}(?:[.,]\d{3})+|\d+(?:[.,]\d+)?)(?![\w])")
 _TOKEN_RE = re.compile(rf"[{_VI_LETTERS}0-9]+")
 _ALLOWED_RE = re.compile(rf"[^{_VI_LETTERS}0-9\s.,!?;:'\-]")
 _SPACES_RE = re.compile(r"\s+")
 
 
-def _number_to_words(token: str) -> str:
-    text = token.replace(",", ".")
-    try:
-        value = float(text) if "." in text else int(text)
-        return num2words(value, lang="vi")
-    except Exception:
-        return token
+def _spell_number(sign: str, body: str) -> str:
+    """Convert number body to words, handling thousands-grouping vs decimals.
+    
+    Thousands: All separator groups are exactly 3 digits (1,000; 1.000.000; 2.500).
+    Decimals: Any other digit[.,]digit pattern (2.5; 3.14; 0.75).
+    """
+    # Detect if all separator groups are exactly 3 digits (thousands grouping)
+    if re.match(r"^\d{1,3}(?:[.,]\d{3})+$", body):
+        # Thousands: strip separators and convert as integer
+        body_int = body.replace(",", "").replace(".", "")
+        try:
+            result = num2words(int(body_int), lang="vi")
+        except Exception:
+            result = body
+    elif re.search(r"[.,]", body):
+        # Decimal: split into integer and fractional parts, read each fractional digit individually
+        normalized = body.replace(",", ".")
+        if "." in normalized:
+            int_part, frac_part = normalized.split(".", 1)
+            try:
+                if int_part == "0" or int_part == "":
+                    int_words = "không"
+                else:
+                    int_words = num2words(int(int_part), lang="vi")
+                # Read each fractional digit individually
+                frac_words = " ".join(num2words(int(d), lang="vi") for d in frac_part)
+                result = f"{int_words} phẩy {frac_words}"
+            except Exception:
+                result = body
+        else:
+            result = body
+    else:
+        # Plain integer
+        try:
+            result = num2words(int(body), lang="vi")
+        except Exception:
+            result = body
+    
+    # Prepend "âm " if negative
+    if sign == "-":
+        result = f"âm {result}"
+    
+    return result
 
 
 def _expand_numbers(text: str) -> str:
-    text = _PERCENT_RE.sub(lambda m: f"{_number_to_words(m.group(1))} phần trăm", text)
-    return _NUMBER_RE.sub(lambda m: _number_to_words(m.group(0)), text)
+    """Expand numbers and percentages to Vietnamese words."""
+    # Handle percent first (e.g., 2.5% → "hai phẩy năm phần trăm")
+    def replace_percent(m):
+        sign = m.group(1)
+        body = m.group(2)
+        number_words = _spell_number(sign, body)
+        return f"{number_words} phần trăm"
+    
+    text = _PERCENT_RE.sub(replace_percent, text)
+    
+    # Then handle all other numbers (with optional sign)
+    def replace_number(m):
+        sign = m.group(1)
+        body = m.group(2)
+        return _spell_number(sign, body)
+    
+    text = _NUMBER_RE.sub(replace_number, text)
+    return text
 
 
 def _apply_loanwords(text: str, loanwords: dict[str, str] | None) -> str:
