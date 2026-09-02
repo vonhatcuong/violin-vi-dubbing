@@ -48,6 +48,16 @@ def _atempo_chain(speed: float) -> str:
     return ",".join(parts)
 
 
+def _trim_fade_filter(chunk_dur: float) -> str:
+    """afade-out just before chunk_dur when merge_video.hard_trim is on; '' otherwise."""
+    vcfg = _conf.get()["merge_video"]
+    if not vcfg.get("hard_trim", False):
+        return ""
+    fade = max(0.01, float(vcfg.get("trim_fade_ms", 80)) / 1000.0)
+    start = max(0.0, chunk_dur - fade)
+    return f"afade=t=out:st={start:.3f}:d={fade:.3f}"
+
+
 def _make_speech_chunk(
     video_path: str, start: float, end: float, out_path: str,
     fps: float, tts_dur: float, freeze_extra: float = 0.0,
@@ -350,6 +360,8 @@ def build_aligned_video(
             audio_speedup = min(needed, max_speedup)
         effective_tts_dur = tts_dur / audio_speedup
         freeze_extra = max(0.0, effective_tts_dur - target_dur)
+        if vcfg.get("hard_trim", False):
+            freeze_extra = 0.0  # audio is cut (with fade) at chunk_dur instead of freezing frames
         if freeze_extra < 0.001:
             freeze_extra = 0.0
         chunk_dur = target_dur + freeze_extra  # = max(target_dur, effective_tts_dur)
@@ -500,6 +512,9 @@ def _build_video_audio_track(
             if audio_speedup > 1.001:
                 af_parts.append(f"atempo={audio_speedup}")
             af_parts.append(f"apad=whole_dur={chunk_dur}")
+            fade = _trim_fade_filter(chunk_dur)
+            if fade:
+                af_parts.append(fade)
             subprocess.run([
                 FFMPEG_EXE,
                 "-i", tts_path,
@@ -529,6 +544,9 @@ def _build_video_audio_track(
             if audio_speedup > 1.001:
                 tts_filter_parts.append(f"atempo={audio_speedup}")
             tts_filter_parts.append(f"apad=whole_dur={chunk_dur}")
+            fade = _trim_fade_filter(chunk_dur)
+            if fade:
+                tts_filter_parts.append(fade)
             tts_filter = ",".join(tts_filter_parts)
             # normalize=0 keeps each input at its requested volume — without
             # it amix halves both, washing out the TTS.

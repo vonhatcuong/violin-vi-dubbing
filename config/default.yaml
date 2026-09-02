@@ -99,6 +99,8 @@ merge_video:
   speed_clamp_max: 2.5
   max_freeze_s: 0.2       # cap on frozen-frame duration when TTS is much longer than the speed-clamped video; beyond this the audio is sped up via atempo instead
   max_audio_speedup: 1.3  # ceiling on atempo applied to TTS to compensate for over-budget speech (1.0 = no speedup, 1.3 ≈ podcast 1.3×)
+  hard_trim: false        # true: when speech still overruns after stretch+atempo, cut it at the slot (with fade) instead of freezing frames
+  trim_fade_ms: 80
   crf: 23
   preset: "ultrafast"
   voiceover_volume: 0.1  # 0.0–1.0 — original audio level for CLI voiceover mode
