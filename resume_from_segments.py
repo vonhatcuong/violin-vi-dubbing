@@ -100,6 +100,38 @@ def _voices_json_path(segments_path: str, stage: str) -> Path | None:
     return p.with_name(f"{stem}.voices.json")
 
 
+def _load_voice_map(path: Path) -> dict[str, str] | None:
+    """Load a persisted ``{speaker: voice}`` map, tolerating a missing/corrupt sidecar file.
+
+    This script exists specifically to recover from a crashed run, so a
+    truncated/empty ``voices.json``, literal ``null``, or any other non-dict
+    JSON must not raise and kill the resume — it degrades to ``None`` (same
+    as "no voices.json was ever written") with a one-line stderr warning.
+    Entries whose key or value isn't a non-empty string are dropped the same
+    way (keeping the rest of the map).
+    """
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        print(f"[resume] WARN: could not read voice_map {path}: {exc} — ignoring", file=sys.stderr)
+        return None
+    if not isinstance(data, dict):
+        print(f"[resume] WARN: voice_map {path} is not a JSON object ({type(data).__name__}) — ignoring",
+              file=sys.stderr)
+        return None
+    voice_map = {
+        k: v for k, v in data.items()
+        if isinstance(k, str) and k and isinstance(v, str) and v
+    }
+    dropped = len(data) - len(voice_map)
+    if dropped:
+        noun = "entry" if dropped == 1 else "entries"
+        print(f"[resume] WARN: dropped {dropped} invalid {noun} from voice_map {path}", file=sys.stderr)
+    return voice_map
+
+
 def _check_fit_stage(cfg: dict, stage: str) -> str | None:
     """Return an error message when resuming would bypass the duration fitter.
 
@@ -164,9 +196,10 @@ def main() -> int:
 
     voice_map: dict[str, str] | None = None
     voices_json_path = _voices_json_path(args.segments, stage)
-    if voices_json_path is not None and voices_json_path.is_file():
-        voice_map = json.loads(voices_json_path.read_text(encoding="utf-8"))
-        print(f"[resume] voice_map loaded ← {voices_json_path} ({len(voice_map)} speakers)")
+    if voices_json_path is not None:
+        voice_map = _load_voice_map(voices_json_path)
+        if voice_map is not None:
+            print(f"[resume] voice_map loaded ← {voices_json_path} ({len(voice_map)} speakers)")
 
     fit_error = _check_fit_stage(cfg, stage)
     if fit_error:
