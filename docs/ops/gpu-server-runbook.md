@@ -258,6 +258,11 @@ Chạy hàng loạt (playlist): script mẫu chạy tuần tự, bỏ qua bài �
 `batch.log` — bản sao trong repo: `scripts/ops/batch_playlist_example.sh` (server) và `scripts/ops/sync_loop_example.sh` (máy cá nhân) (khung: vòng `for id in $IDS`, `yt-dlp` →
 `main.py` → `touch DONE`). Kết hợp với một vòng lặp rsync trên máy cá nhân chỉ kéo thư mục có `DONE`.
 
+Giải phóng đĩa server: mỗi bài giảng để lại ~0,5–1 GB (bản gốc + 720p + audio gốc + video nguồn); ổ 100 GB đầy sau ~60 bài.
+Vòng lặp mẫu `scripts/ops/sync_loop_example.sh` xoá các file nặng đó trên server ngay khi bản 720p đã về máy với đúng
+kích thước (giữ lại `.srt`, `*.segments.json`, `fit.units.json`, log — vài MB mỗi bài). Dọn tay khi cần:
+`rm -f /workspace/out_<khoá>/<tag>/{*_vi.mp4,*_720p.mp4,*_original.m4a} /workspace/samples/<khoá>/<id>.mp4`.
+
 ## 7. Chuyển sang server mới: sao lưu gì, tải lại gì
 
 | Mục | Kích thước | Sao lưu hay tải lại? |

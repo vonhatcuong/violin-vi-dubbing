@@ -18,14 +18,20 @@ while [ $(date +%s) -lt $END ]; do
       rsync -a --partial -e "$SSH" $H:/workspace/$remote/${stem}_720p.mp4 :/workspace/$remote/${stem}.srt :/workspace/$remote/${stem}.voices.json :/workspace/$remote/${stem}.fit.units.json :/workspace/$remote/${stem}.transcript.txt :/workspace/$remote/$log.log "$BASE/$local/" && [ -s "$BASE/$local/${stem}_720p.mp4" ] && touch "$BASE/$local/.synced" && echo "$(date +%FT%T) synced $local"
     fi
   done
-  for tag in $($SSH $H "cd /workspace/out_18_06 2>/dev/null && ls -d */DONE 2>/dev/null | cut -d/ -f1"); do
-    [ -f "$BASE/mit_18_06/$tag/.synced" ] && continue
-    id=${tag#*_}
-    # compact copy on the server first (NVENC, native resolution capped at 720p, ~300-500 kbps) — the merger's own encode is ~1.6 Mbps
-    $SSH $H "pgrep -f \"ffmpeg.*${id}_vi_720[p]\" >/dev/null" && continue
-    $SSH $H "cd /workspace/out_18_06/$tag && ([ -f ${id}_vi_720p.mp4 ] || ffmpeg -hide_banner -loglevel error -y -hwaccel cuda -i ${id}_vi.mp4 -vf \"scale=-2:'min(720,ih)'\" -c:v h264_nvenc -preset p4 -cq 32 -c:a aac -b:a 96k ${id}_vi_720p.mp4) && ffprobe -v error -show_entries format=duration -of csv=p=0 ${id}_vi_720p.mp4 | grep -qE '^[0-9]'" || continue
-    mkdir -p "$BASE/mit_18_06/$tag"
-    rsync -a --partial -e "$SSH" $H:/workspace/out_18_06/$tag/${id}_vi_720p.mp4 :/workspace/out_18_06/$tag/${id}_vi.srt :/workspace/out_18_06/$tag/${id}_vi.fit.units.json :/workspace/out_18_06/$tag/${id}_vi.transcript.txt :/workspace/out_18_06/$tag/run.log "$BASE/mit_18_06/$tag/" && [ -s "$BASE/mit_18_06/$tag/${id}_vi_720p.mp4" ] && touch "$BASE/mit_18_06/$tag/.synced" && echo "$(date +%FT%T) synced $tag"
+  for rp in "out_18_06:mit_18_06" "out_cs336:cs336"; do
+    root=${rp%%:*}; lroot=${rp#*:}
+    for tag in $($SSH $H "cd /workspace/$root 2>/dev/null && ls -d */DONE 2>/dev/null | cut -d/ -f1"); do
+      [ -f "$BASE/$lroot/$tag/.synced" ] && continue
+      id=${tag#*_}
+      # compact copy on the server first (NVENC, native resolution capped at 720p, ~300-500 kbps) — the merger's own encode is ~1.6 Mbps
+      $SSH $H "pgrep -f \"ffmpeg.*${id}_vi_720[p]\" >/dev/null" && continue
+      $SSH $H "cd /workspace/$root/$tag && ([ -f ${id}_vi_720p.mp4 ] || ffmpeg -hide_banner -loglevel error -y -hwaccel cuda -i ${id}_vi.mp4 -vf \"scale=-2:'min(720,ih)'\" -c:v h264_nvenc -preset p4 -cq 32 -c:a aac -b:a 96k ${id}_vi_720p.mp4) && ffprobe -v error -show_entries format=duration -of csv=p=0 ${id}_vi_720p.mp4 | grep -qE '^[0-9]'" || continue
+      mkdir -p "$BASE/$lroot/$tag"
+      rsync -a --partial -e "$SSH" $H:/workspace/$root/$tag/${id}_vi_720p.mp4 :/workspace/$root/$tag/${id}_vi.srt :/workspace/$root/$tag/${id}_vi.fit.units.json :/workspace/$root/$tag/${id}_vi.transcript.txt :/workspace/$root/$tag/run.log "$BASE/$lroot/$tag/" && [ -s "$BASE/$lroot/$tag/${id}_vi_720p.mp4" ] && touch "$BASE/$lroot/$tag/.synced" && echo "$(date +%FT%T) synced $tag" && {
+        # free server space: remove the heavy files only when the local 720p copy has the exact server size (JSON/srt/log stay)
+        lsz=$(stat -f %z "$BASE/$lroot/$tag/${id}_vi_720p.mp4"); course=${root#out_}
+        $SSH $H "[ \"\$(stat -c %s /workspace/$root/$tag/${id}_vi_720p.mp4 2>/dev/null)\" = \"$lsz\" ] && rm -f /workspace/$root/$tag/${id}_vi.mp4 /workspace/$root/$tag/${id}_vi_720p.mp4 /workspace/$root/$tag/${id}_vi_original.m4a /workspace/samples/$course/$id.mp4 && echo cleaned-$tag" ; }
+    done
   done
   sleep 600
 done
