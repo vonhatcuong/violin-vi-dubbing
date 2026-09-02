@@ -27,6 +27,7 @@ For URL inputs, skip the `test -f` check. Only require the key for the config be
 
 - **CLI vs API**: single run-and-wait file → CLI (`violin`). Multi-job / HTTP / web UI → API server (`violin-api`); print the command, don't auto-start it.
 - **Vietnamese local default**: if the user says "Vietnamese", "tiếng Việt", or asks for local Edge-TTS, use `--language Vietnamese --config config/local_mac.yaml --subtitle-formats srt,vtt,txt --burn-subtitles`.
+- **Fully offline Vietnamese**: `--config config/local_mac.yaml` also works fully offline (no API keys) — it runs transcription, translation, and TTS entirely on-device.
 - **Style** (`--style`): default `standard`. Kids content → `kids`, formal/lecture → `academic`, casual → `casual`, dramatic → `storyteller`, news → `news`. Run `violin --style list` if unsure.
 - **Voiceover**: keep default (mix dubbed audio over a quiet original). Use `--no-voiceover` only when the user explicitly says "replace audio entirely".
 

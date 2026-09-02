@@ -22,7 +22,7 @@ Available as a **CLI**, a **FastAPI web app**, and a **Claude Code skill**.
 - **YouTube/URL or file input** — use the web app with a pasted URL, or upload MP4/MOV/MKV/WebM plus MP3/WAV/M4A/FLAC audio files
 - **Timestamp-aligned TTS** — source gaps stay as gaps; each translated segment is placed on the original timeline
 - **Subtitle and transcript outputs** — SRT, VTT, timestamped TXT, plain transcript TXT, and optional burned-subtitle MP4
-- **Local Vietnamese preset** — `config/local_mac.yaml` uses local faster-whisper transcription and Vietnamese Edge-TTS voices
+- **Local Vietnamese preset** — `config/local_mac.yaml` / `config/local_gpu.yaml` run fully local: faster-whisper transcription, Gemma 4 (Ollama) translation, VieNeu-TTS v3 Turbo voices, no API keys
 - **SQLite job history** — processed jobs are mirrored into `jobs/jobs.sqlite` for local history/resume
 - **In-video Q&A** — ask questions about any moment in the dubbed video; answers use nearby subtitles plus sampled frames
 - **Natural-language voice picker** — describe the voice you want, an LLM picks from the catalog
@@ -82,14 +82,10 @@ uv sync
 cp .env.example .env             # then fill in TOGETHER_API_KEY
 uv run main.py lecture.mp4 lecture_zh.mp4 --language Chinese
 
-# Local Vietnamese workflow: local STT + Edge-TTS, with all subtitle formats
-export OLLAMA_API_KEY=...     # only needed by config/local_mac.yaml translation/chat
-uv sync --extra local
-uv run main.py lecture.mp4 lecture_vi.mp4 \
-  --language Vietnamese \
-  --config config/local_mac.yaml \
-  --subtitle-formats srt,vtt,txt \
-  --burn-subtitles
+# Fully-local Vietnamese dubbing (Mac M-series / NVIDIA) — no API keys
+uv sync --extra local-mac            # or --extra local-gpu (see GPU torch note below)
+# one-time: `ollama pull gemma4:12b-mlx` (Mac) / `gemma4:31b` (GPU); VieNeu downloads its weights on first run
+uv run main.py lecture.mp4 lecture_vi.mp4 --language Vietnamese --config config/local_mac.yaml
 ```
 
 To use the `violin` / `violin-api` commands globally while edits to your local source reflect immediately, install editable:
@@ -161,6 +157,19 @@ A starter `config/prod.yaml` is included for public deployments. It adds upload 
 | `CORS_ORIGINS` | Optional | Comma-separated allowed origins (default: `*`) |
 
 > You only need keys for the providers you actually pick. Pure-OpenAI deployments (all stages on `openai`) work too — `OPENAI_API_KEY` alone is enough. Same idea for ElevenLabs.
+
+### Fully-local Vietnamese dubbing
+
+`config/local_mac.yaml` (Apple Silicon) and `config/local_gpu.yaml` (NVIDIA) run every stage on-device — faster-whisper for transcription, Gemma 4 via Ollama for translation, VieNeu-TTS v3 Turbo for voice synthesis — with no API keys and no network access after the models are downloaded.
+
+- **Fit stage** — after TTS, a syllable-budget fitter shortens translations that overrun their time slot and re-speeds/pause-borrows the audio to line up with the source timing. Per-unit details (budget, shortened text, measured overrun) are written to `<output>.fit.units.json`; pass `--no-fit` to disable the stage and keep the raw TTS timing.
+- **Ollama context length** — on a 24 GB GPU, set `OLLAMA_CONTEXT_LENGTH=8192` when serving `gemma4:31b`; otherwise Ollama defaults to a much larger context and spills part of the model to CPU.
+- **Disable hidden thinking** — `translation.reasoning_effort: none` in the config stops Gemma 4's hidden reasoning pass, which is roughly 10× faster for translation.
+- **GPU torch build** — the VieNeu GPU engine needs a CUDA build of torch, installed separately after `uv sync --extra local-gpu`:
+
+  ```bash
+  uv pip install "torch==2.8.0" "torchaudio==2.8.0" --index-url https://download.pytorch.org/whl/cu128
+  ```
 
 ---
 

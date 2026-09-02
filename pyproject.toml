@@ -44,13 +44,25 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Local on-device pipeline (Mac M-series / generic CPU). Install with:
-#   uv sync --extra local
-# or
-#   uv pip install -e ".[local]"
-local = [
-    "faster-whisper>=1.1.0",   # local Whisper via CTranslate2 (MIT)
-    "supertonic>=0.1.0",       # on-device 31-lang TTS (MIT)
+# Fully-local stack. Mac: `uv sync --extra local-mac`; NVIDIA: `uv sync --extra local-gpu`
+# then install the CUDA torch build the VieNeu GPU engine expects (see README).
+local-mac = [
+    "faster-whisper>=1.1.0",
+    "supertonic>=0.1.0",
+    "vieneu>=3.3.0",
+    "librosa>=0.10",
+]
+local-gpu = [
+    "faster-whisper>=1.1.0",
+    "vieneu>=3.3.0",
+    "transformers==4.57.6",   # pinned by the vieneu GPU engine (Qwen3 backbone + MOSS codec)
+    "librosa>=0.10",
+]
+local = [   # backwards-compatible alias of local-mac
+    "faster-whisper>=1.1.0",
+    "supertonic>=0.1.0",
+    "vieneu>=3.3.0",
+    "librosa>=0.10",
 ]
 
 [project.scripts]
