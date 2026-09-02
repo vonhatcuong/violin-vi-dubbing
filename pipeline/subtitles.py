@@ -67,7 +67,7 @@ def _cues_by_proportion(seg: Segment, max_chars: int) -> list[Segment]:
     out: list[Segment] = []
     t = seg.start
     for i, c in enumerate(chunks):
-        end = seg.end if i == len(chunks) - 1 else t + dur * len(c) / total
+        end = max(seg.end, t + 0.05) if i == len(chunks) - 1 else max(t + dur * len(c) / total, t + 0.05)
         out.append(Segment(id=0, start=t, end=end, text=c))
         t = end
     return out

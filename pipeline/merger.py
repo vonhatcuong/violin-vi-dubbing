@@ -723,7 +723,8 @@ def burn_subtitles(input_video_path: str, subtitle_path: str, output_video_path:
     vf = f"subtitles='{escaped}'"
     style = _conf.get().get("subtitles", {}).get("burn_style", "")
     if style:
-        vf += f":force_style='{style}'"
+        escaped_style = style.replace("'", "\\'")
+        vf += f":force_style='{escaped_style}'"
     subprocess.run([
         FFMPEG_EXE,
         "-i", input_video_path,

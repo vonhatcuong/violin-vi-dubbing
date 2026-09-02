@@ -30,10 +30,12 @@ def test_breaks_on_max_duration():
 
 def test_short_cue_is_merged_into_previous():
     words = [("Hello", 0.0, 0.5), ("there,", 0.6, 1.0), ("ok.", 1.05, 1.2)]
-    cues = split_into_cues([_sentence(words)], max_chars=12, max_duration=6.0, min_duration=1.0)
-    # "Hello there," (12 chars) then "ok." would be a 0.15 s cue → merged back when it fits, else kept
+    cues = split_into_cues([_sentence(words)], max_chars=16, max_duration=6.0, min_duration=1.0)
+    # "Hello there," (12 chars) then "ok." would be a 0.15 s cue → merged back when it fits (16 chars combined)
     assert cues[-1].end == pytest.approx(1.2)
     assert sum(len(c.text.split()) for c in cues) == 3
+    assert len(cues) == 1
+    assert cues[0].text == "Hello there, ok."
 
 
 def test_fallback_without_words_splits_by_chars_and_time():
@@ -49,3 +51,14 @@ def test_sentence_within_limits_is_one_cue():
     words = [("Short", 0.0, 0.3), ("one.", 0.4, 0.8)]
     cues = split_into_cues([_sentence(words)], max_chars=84, max_duration=6.0, min_duration=1.0)
     assert len(cues) == 1 and cues[0].text == "Short one." and cues[0].words is None
+
+
+def test_fallback_zero_duration_sentence_still_yields_positive_cues():
+    text = " ".join("abcdefghijklmnopqrst")   # "a b c ... t", 20 single-letter words
+    seg = Segment(id=0, start=5.0, end=5.0, text=text)
+    cues = split_into_cues([seg], max_chars=10, max_duration=60.0, min_duration=0.0)
+    assert len(cues) >= 2
+    assert all(c.end > c.start for c in cues)
+    for prev, nxt in zip(cues, cues[1:]):
+        assert prev.end == pytest.approx(nxt.start)
+    assert " ".join(c.text for c in cues) == text
