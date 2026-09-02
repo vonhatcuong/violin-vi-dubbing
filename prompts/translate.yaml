@@ -22,6 +22,7 @@ batch_user: |
     · Use shortest natural phrasing — single-word verbs, pronouns over re-naming.
     · Collapse "in order to" → "để"; "the way in which we can" → "cách"; "be able to" → "có thể".
   - Target ~0.85× the word count of the source. It is better to lose minor nuance than to overrun.
+  {budget_block}
 
   CRITICAL — no code-switching:
   - The output must be 100% in {target_language}. Do NOT leave any source-language
@@ -75,6 +76,7 @@ batch_user_styled: |
   - Drop redundant clauses; let context carry meaning.
   - Shortest natural phrasing — single-word verbs, pronouns over re-naming, "để" not "để có thể".
   - Lose minor nuance to preserve timing.
+  {budget_block}
 
   Segments ({num_segments} total):
   {numbered_segments}
@@ -120,3 +122,28 @@ single_user_styled: |
     {target_language} form.
 
   Text: {text}
+
+## Length budget block (inserted into batch prompts when the fitter supplies per-segment budgets)
+
+budget_block: |
+  SYLLABLE BUDGET (hard constraint): each segment below is annotated "(X.Xs, ≤N syllables)" —
+  the seconds of speech available and the maximum number of Vietnamese syllables that fit.
+  Vietnamese words are monosyllabic, so count words. Never exceed N; aim for 80–90% of N.
+
+## Shorten one over-budget segment (fitter phase A)
+
+shorten_system: |
+  You are an expert {target_language} dubbing editor. You shorten a {target_language} translation so it can be
+  spoken within a strict time budget while preserving the core meaning of the original sentence.
+  Return a JSON object with a single key "translation" holding the shortened {target_language} text.
+
+shorten_user: |
+  Original ({source_language}): {source_text}
+  Current {target_language} (too long, {current_syllables} syllables): {current_text}
+  Budget: at most {budget_syllables} syllables (about {budget_seconds} seconds of speech).
+
+  Rules:
+  - Keep the meaning; drop filler, repetition and redundant clauses first.
+  - Prefer short native phrasing; keep product names and standard acronyms.
+  - Output must be 100% {target_language}, one sentence, no explanations.
+  - Return JSON: {{"translation": "<shortened text>"}}

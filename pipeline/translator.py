@@ -176,11 +176,18 @@ def _try_batch(
     tracker: CostTracker | None = None,
     style_directives: str = "",
     style_temperature: float | None = None,
+    budgets: list[tuple[float, int]] | None = None,
 ) -> list[str] | None:
     """Attempt to translate a batch. Returns translations on success, None on failure."""
-    numbered = "\n".join(
-        f"[{i}]: {json.dumps(t, ensure_ascii=False)}" for i, t in enumerate(texts)
-    )
+    if budgets:
+        numbered = "\n".join(
+            f"[{i}] ({sec:.1f}s, ≤{syl} syllables): {json.dumps(t, ensure_ascii=False)}"
+            for i, (t, (sec, syl)) in enumerate(zip(texts, budgets))
+        )
+        budget_block = _prompts.load("translate", "budget_block")
+    else:
+        numbered = "\n".join(f"[{i}]: {json.dumps(t, ensure_ascii=False)}" for i, t in enumerate(texts))
+        budget_block = ""
 
     fmt = dict(
         source_language=source_language,
@@ -189,6 +196,7 @@ def _try_batch(
         numbered_segments=numbered,
         style_directives=style_directives,
         asr_corrections_block=_asr_corrections_block(),
+        budget_block=budget_block,
     )
     if style_directives:
         system_msg = _prompts.load("translate", "batch_system_styled", **fmt)
@@ -258,9 +266,10 @@ def _translate_batch(
     tracker: CostTracker | None = None,
     style_directives: str = "",
     style_temperature: float | None = None,
+    budgets: list[tuple[float, int]] | None = None,
 ) -> list[str]:
     """Translate a batch with binary-split fallback on failure."""
-    result = _try_batch(texts, target_language, source_language, client, tracker, style_directives, style_temperature)
+    result = _try_batch(texts, target_language, source_language, client, tracker, style_directives, style_temperature, budgets)
     if result is not None:
         return result
 
@@ -272,8 +281,10 @@ def _translate_batch(
 
     mid = len(texts) // 2
     print(f"      ↓ Splitting failed batch of {len(texts)} → {mid} + {len(texts) - mid}")
-    left = _translate_batch(texts[:mid], target_language, source_language, client, tracker, style_directives, style_temperature)
-    right = _translate_batch(texts[mid:], target_language, source_language, client, tracker, style_directives, style_temperature)
+    left_budgets = budgets[:mid] if budgets else None
+    right_budgets = budgets[mid:] if budgets else None
+    left = _translate_batch(texts[:mid], target_language, source_language, client, tracker, style_directives, style_temperature, left_budgets)
+    right = _translate_batch(texts[mid:], target_language, source_language, client, tracker, style_directives, style_temperature, right_budgets)
     return left + right
 
 
@@ -285,6 +296,7 @@ def translate_segments(
     tracker: CostTracker | None = None,
     style_directives: str = "",
     style_temperature: float | None = None,
+    budgets: list[tuple[float, int]] | None = None,
 ) -> list[Segment]:
     """Translate all segments, batching to stay within LLM context limits."""
     translated_texts: list[str] = []
@@ -293,9 +305,10 @@ def translate_segments(
     for i in range(0, len(segments), batch_size):
         batch = segments[i : i + batch_size]
         texts = [s.text for s in batch]
+        batch_budgets = budgets[i : i + batch_size] if budgets else None
         print(f"      Translating segments {i + 1}–{i + len(batch)} / {len(segments)}...")
         translated_texts.extend(
-            _translate_batch(texts, target_language, source_language, client, tracker, style_directives, style_temperature)
+            _translate_batch(texts, target_language, source_language, client, tracker, style_directives, style_temperature, batch_budgets)
         )
 
     return [
@@ -305,3 +318,51 @@ def translate_segments(
         )
         for s, t in zip(segments, translated_texts)
     ]
+
+
+def shorten_segment(
+    source_text: str,
+    current_text: str,
+    budget_syllables: int,
+    budget_seconds: float,
+    target_language: str,
+    client: Any,
+    tracker: CostTracker | None = None,
+    source_language: str = "English",
+) -> str:
+    """Ask the LLM for a shorter translation that fits `budget_syllables`.
+
+    Returns `current_text` unchanged when the model fails, so the fitter can
+    always continue (speed-up + merger will absorb the overrun instead).
+    """
+    from .vi_text import count_syllables
+
+    cfg = _conf.get()
+    fmt = dict(
+        source_language=source_language,
+        target_language=target_language,
+        source_text=source_text,
+        current_text=current_text,
+        current_syllables=count_syllables(current_text),
+        budget_syllables=budget_syllables,
+        budget_seconds=f"{budget_seconds:.1f}",
+    )
+    system_msg = _prompts.load("translate", "shorten_system", **fmt)
+    user_msg = _prompts.load("translate", "shorten_user", **fmt)
+    if _is_local_provider(cfg):
+        system_msg = "/no_think\n" + system_msg
+    try:
+        response = client.chat.completions.create(
+            model=get_translation_model(cfg),
+            messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
+            temperature=0.2,
+            response_format=_response_format("shortened_translation", SINGLE_SCHEMA),
+            **_together_extra(),
+        )
+        if tracker and getattr(response, "usage", None):
+            tracker.add_llm_usage(response.usage.prompt_tokens or 0, response.usage.completion_tokens or 0)
+        text = json.loads(response.choices[0].message.content.strip())["translation"].strip()
+        return text or current_text
+    except Exception as exc:  # JSON errors, API errors — never break the pipeline
+        print(f"        ⚠ shorten failed ({exc}); keeping current text")
+        return current_text
