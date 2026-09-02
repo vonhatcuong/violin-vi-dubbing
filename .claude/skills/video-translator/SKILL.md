@@ -29,6 +29,7 @@ For URL inputs, skip the `test -f` check. Only require the key for the config be
 - **Fully offline Vietnamese**: `--config config/local_mac.yaml` also works fully offline (no API keys) — it runs transcription, translation, and TTS entirely on-device.
 - **Style** (`--style`): default `standard`. Kids content → `kids`, formal/lecture → `academic`, casual → `casual`, dramatic → `storyteller`, news → `news`. Run `violin --style list` if unsure.
 - **Voiceover**: keep default (mix dubbed audio over a quiet original). Use `--no-voiceover` only when the user explicitly says "replace audio entirely".
+- **Multiple speakers**: if the user mentions multiple people/speakers or asks for distinct voices per person, add `--speakers auto` (or a fixed count if they know it); pair with `--voice-map` only if they name specific voices per speaker.
 
 ## Run
 
@@ -50,6 +51,8 @@ violin <input-file-or-url> <output> --language <Lang> [flags]
 | `--no-voiceover` | off | User says "replace original audio entirely". |
 | `--config` / `-c` | `config/default.yaml` | Use `config/local_mac.yaml` for local faster-whisper + Edge-TTS Vietnamese jobs. |
 | `--timings-out` | off | Only when the user wants a per-step timing JSON for debugging / benchmarking. |
+| `--speakers {1,auto,N}` | `1` (off) | Multiple speakers, each in their own voice: `auto` clusters speakers automatically, a fixed `N` skips clustering. Local-only feature (needs the diarizer). |
+| `--voice-map` | none | Explicit per-speaker voices, e.g. `"SPEAKER_00=Phạm Tuyên,SPEAKER_01=Ngọc Huyền"`; use with `--speakers`. |
 
 ## Language coverage
 

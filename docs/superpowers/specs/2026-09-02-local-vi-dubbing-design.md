@@ -160,3 +160,11 @@ Chạy tuần tự, giải phóng model giữa các stage: Demucs (~2 GB) → un
 ## Amendment M2 (2026-09-02, sau khi M1 chạy E2E)
 
 Phạm vi M2 theo yêu cầu user: (1) pipelining dịch batch N+1 song song TTS batch N (2 GPU); (2) nhiều người nói — diarization theo câu (ECAPA của speechbrain + clustering, tuỳ chọn pyannote) và gán giọng preset theo speaker/giới tính (F0); (3) tách câu ASR dài (> 12 s) theo dấu phẩy hoặc khoảng lặng, áp sau merge; (4) kéo chậm nhẹ (atempo ≥ 0,85) cho unit lấp dưới 60 % slot. Demucs tách nhạc nền hoãn lại (user không yêu cầu). Kết quả đo M1 trên 2× RTX 3090: 79 phút → 16 phút 53 s; 21 phút → 4 phút 53 s. Plan: `docs/superpowers/plans/2026-09-02-local-vi-dubbing-m2.md`.
+
+### M2 results (2026-09-02)
+
+- Đo trên 2× RTX 3090 (`config/local_gpu.yaml`, `translation.batch_size: 16`), một lần chạy chứ không phải benchmark: bài giảng DeepMind 21 phút (1267 s nguồn) — 4 phút 11 giây cả pipeline (ASR 1 phút 37 giây, dịch+TTS pipelined 2 phút 30 giây) cộng ~2 phút ghép ffmpeg ngoài tracker; 164 unit, fill trung vị 0,84, unit dài nhất còn 11,9 s sau khi tách (trước đó 163 s).
+- Phỏng vấn 2 người, 134 s, `--speakers auto`: 52 s, tách đúng 2 người nói kèm đúng giới tính.
+- Vấn đề 1 phát hiện khi chạy E2E: câu ASR có khoảng lặng dài ở giữa không bị tách dù đã có `max_sentence_seconds`/dấu câu — sửa bằng `transcription.long_gap_seconds: 2.0` (luôn cắt tại khoảng lặng ≥ giá trị này, bất kể độ dài mảnh kết quả).
+- Vấn đề 2: câu rất ngắn (~0,5 s) đôi khi bị ECAPA clustering tách thành một "người nói" giả riêng, mỗi người một giọng khác nhau — sửa bằng cách hấp thụ cụm nhỏ vào cụm lớn có centroid gần nhất, cấu hình `diarization.min_cluster_segments: 3` / `diarization.min_cluster_seconds: 3.0`.
+- Giọng nam mặc định đổi lại thành `Phạm Tuyên` (từ `Thanh Bình`): một số clip preset `Thanh Bình` không có khoảng lặng đầu và cắt mất phụ âm đầu; `Phạm Tuyên` có ~100–200 ms khoảng lặng tự nhiên. Hiệu chỉnh lại `fit.sec_per_syllable: 0,23` cho cả hai preset theo `scripts/calibrate_voice.py` (Phạm Tuyên đo 0,227 s/âm tiết).
