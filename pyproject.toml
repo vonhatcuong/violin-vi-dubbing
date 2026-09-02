@@ -40,6 +40,7 @@ dependencies = [
     "together>=2.5.0",
     "uvicorn>=0.42.0",
     "yt-dlp>=2025.1.0",
+    "num2words>=0.5.14",
 ]
 
 [project.optional-dependencies]
