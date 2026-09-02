@@ -2747,3 +2747,142 @@ git commit -m "docs: fully-local Vietnamese dubbing guide and voice calibration 
 - **Spec coverage M1:** lỗi có sẵn (Task 1, 8, 11 `max_subtitle_chars: 0`), LLM local (2, 3), vi_text (4), voice bank (5), VieNeu (6), budget + shorten (7), fitter + 2 pha (9), hard_trim (10), orchestrator/CLI/preset/resume (11), E2E + calibrate + extras (12). Amendment 2026-09-02: TTS = VieNeu-TTS v3 Turbo, LLM = Gemma 4 (quyết định user); F5-TTS-vi và vinorm bị loại. Chưa thuộc M1 (đúng theo spec): Demucs stems (M2), diarization/gender (M3), WhisperX/vLLM (M4), quality gate (M5) — mỗi cái sẽ có plan riêng.
 - **Placeholder scan:** không còn TBD/TODO; mọi bước có code hoặc lệnh cụ thể.
 - **Type consistency:** `synth(text, voice, out_path, speed) -> str` (vieneu bỏ qua speed) dùng nhất quán ở Task 6, 9, 11, 12; `shorten_fn(src, cur, budget_syll, budget_s) -> str` ở Task 7, 9, 11; `budgets: list[tuple[float, int]]` ở Task 7, 9, 11; `Segment.source_text` ở Task 1, 8, 9, 11.
+
+---
+
+### Task 13: Tắt "thinking" của Gemma 4 trên Ollama (`reasoning_effort`) — chạy ngay sau Task 8
+
+**Files:**
+- Modify: `pipeline/translator.py` (`_together_extra` → `_provider_extra`; dùng ở `_translate_single`, `_try_batch`, `shorten_segment`)
+- Modify: `config/default.yaml` khối `translation` (thêm `reasoning_effort`)
+- Test: `tests/test_translator_reasoning.py`
+
+**Interfaces:**
+- Consumes: `get_translation_provider(cfg)`, `_tcfg()`.
+- Produces: `translator._provider_extra() -> dict` trả `{"extra_body": {...}}` hoặc `{}`; config `translation.reasoning_effort: "none" | "low" | "medium" | "high" | null`.
+- Bối cảnh đo được (spike 2026-09-02, gemma4:31b trên RTX 3090 qua Ollama 0.33): mặc định model suy nghĩ ~1,5 k ký tự mỗi câu trả lời → 13 s/câu, batch 16 câu mất ~125 s; với `extra_body={"reasoning_effort": "none"}` qua endpoint OpenAI-compatible → 1,1 s/câu, không có reasoning; `extra_body={"think": false}` KHÔNG được endpoint này tôn trọng; tiền tố `/no_think` không ảnh hưởng Gemma (vẫn giữ cho Qwen).
+
+- [ ] **Step 1: Viết test thất bại**
+
+`tests/test_translator_reasoning.py`:
+
+```python
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from pipeline import config as pipeline_config
+from pipeline import translator
+
+
+class FakeClient:
+    def __init__(self, content):
+        self.calls = []
+        self._content = content
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=self._content))], usage=None)
+
+
+@pytest.fixture
+def cfg():
+    return pipeline_config.load()
+
+
+def _set_provider(cfg, provider, **extra):
+    cfg["models"]["translation"] = {"provider": provider, "model": "m", **extra}
+
+
+def test_ollama_sends_reasoning_effort_none_by_default(cfg):
+    _set_provider(cfg, "ollama")
+    client = FakeClient(json.dumps({"translations": ["xin chào"]}))
+    translator._try_batch(["hello"], "Vietnamese", "English", client)
+    assert client.calls[0]["extra_body"] == {"reasoning_effort": "none"}
+
+
+def test_reasoning_effort_is_configurable(cfg, monkeypatch):
+    _set_provider(cfg, "ollama")
+    monkeypatch.setitem(cfg["translation"], "reasoning_effort", "low")
+    client = FakeClient(json.dumps({"translation": "xin chào"}))
+    translator._translate_single("hello", "Vietnamese", "English", client)
+    assert client.calls[0]["extra_body"] == {"reasoning_effort": "low"}
+
+
+def test_openai_compat_sends_nothing_unless_configured(cfg, monkeypatch):
+    _set_provider(cfg, "openai_compat", base_url="http://x")
+    client = FakeClient(json.dumps({"translations": ["xin chào"]}))
+    translator._try_batch(["hello"], "Vietnamese", "English", client)
+    assert "extra_body" not in client.calls[0]
+    monkeypatch.setitem(cfg["translation"], "reasoning_effort", "none")
+    translator._try_batch(["hello"], "Vietnamese", "English", client)
+    assert client.calls[1]["extra_body"] == {"reasoning_effort": "none"}
+
+
+def test_together_keeps_enable_thinking_false(cfg):
+    _set_provider(cfg, "together")
+    client = FakeClient(json.dumps({"translations": ["xin chào"]}))
+    translator._try_batch(["hello"], "Vietnamese", "English", client)
+    assert client.calls[0]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_shorten_segment_uses_provider_extra(cfg):
+    _set_provider(cfg, "ollama")
+    client = FakeClient(json.dumps({"translation": "ngắn"}))
+    translator.shorten_segment("long source", "bản dịch dài", 3, 1.0, "Vietnamese", client)
+    assert client.calls[0]["extra_body"] == {"reasoning_effort": "none"}
+```
+
+- [ ] **Step 2: Chạy test, xác nhận thất bại**
+
+Run: `uv run python -m pytest tests/test_translator_reasoning.py -v`
+Expected: FAIL — `KeyError: 'extra_body'` cho các test Ollama (hiện chỉ Together mới gửi `extra_body`).
+
+- [ ] **Step 3: Sửa `pipeline/translator.py`**
+
+Thay `_together_extra` bằng:
+
+```python
+def _provider_extra() -> dict[str, Any]:
+    """Provider-specific `extra_body` kwargs that switch off hidden reasoning.
+
+    together      → chat_template_kwargs.enable_thinking=False (Qwen on Together).
+    ollama        → reasoning_effort (default "none"): Gemma 4 thinks by default and
+                    the OpenAI-compatible endpoint ignores `think: false`; measured
+                    13 s → 1.1 s per sentence on gemma4:31b.
+    openai_compat → reasoning_effort only when `translation.reasoning_effort` is set
+                    (some servers reject unknown fields).
+    """
+    cfg = _conf.get()
+    provider = get_translation_provider(cfg)
+    if provider == "together":
+        return {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    effort = _tcfg().get("reasoning_effort", "none" if provider == "ollama" else None)
+    if provider in ("ollama", "openai_compat") and effort:
+        return {"extra_body": {"reasoning_effort": effort}}
+    return {}
+```
+
+Thay mọi `**_together_extra()` (3 chỗ: `_translate_single`, `_try_batch`, `shorten_segment`) bằng `**_provider_extra()`. Giữ nguyên tiền tố `/no_think`.
+
+`config/default.yaml` khối `translation` thêm:
+
+```yaml
+  reasoning_effort: none         # ollama: "none" disables Gemma 4 / Qwen 3 hidden thinking (10× faster); openai_compat: sent only if set
+```
+
+Lưu ý: vì default.yaml đặt `none` cho mọi provider, test `test_openai_compat_sends_nothing_unless_configured` cần `monkeypatch.delitem(cfg["translation"], "reasoning_effort")` trước lần gọi đầu (thêm dòng đó vào test), rồi `setitem` lại.
+
+- [ ] **Step 4: Chạy test**
+
+Run: `uv run python -m pytest -q`
+Expected: toàn bộ pass (5 test mới).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add pipeline/translator.py config/default.yaml tests/test_translator_reasoning.py
+git commit -m "feat(translator): disable hidden reasoning on Ollama via reasoning_effort"
+```
