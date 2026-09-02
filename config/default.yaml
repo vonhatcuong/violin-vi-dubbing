@@ -91,6 +91,7 @@ fit:
   max_shorten_rounds: 2
   max_pause_borrow_s: 0.6     # how much of the following pause a sentence may borrow
   margin_s: 0.05              # keep this gap before the next sentence's onset
+  batch_chunk: 32   # units per synth_batch call (memory bound; VieNeu batches internally up to vieneu.max_batch_size)
 
 # ── 5. Video merge / alignment ──────────────────────────────
 merge_video:

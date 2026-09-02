@@ -136,6 +136,15 @@ def test_synthesize_batch_writes_all_files_with_one_engine_call(env, tmp_path):
     assert all(sf.info(p).samplerate == 44100 and sf.info(p).channels == 1 for p in paths)
 
 
+def test_synthesize_batch_raises_when_engine_returns_fewer_clips_than_requested(env, tmp_path):
+    engine = FakeEngine(seconds=1.0)
+    engine.infer_batch = lambda texts, voice=None, **kwargs: [engine._sine() for _ in texts[:-1]]  # one short
+    paths = [str(tmp_path / f"c{i}.wav") for i in range(3)]
+    with pytest.raises(RuntimeError, match="2 clips for 3 texts"):
+        tts_vieneu.synthesize_batch(["Một.", "Hai.", "Ba."], "Phạm Tuyên", paths, engine, language="vi")
+    assert not Path(paths[-1]).exists()
+
+
 def test_make_batch_synthesizer_none_when_disabled(env, monkeypatch):
     cfg = pipeline_config.get()
     monkeypatch.setitem(cfg["models"], "tts", {"provider": "vieneu", "model": "vieneu-v3-turbo"})

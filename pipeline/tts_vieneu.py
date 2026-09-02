@@ -196,6 +196,8 @@ def synthesize_batch(
             repetition_penalty=float(cfg.get("repetition_penalty", 1.2)),
             apply_watermark=bool(cfg.get("watermark", True)),
         )
+    if len(wavs) != len(texts):
+        raise RuntimeError(f"vieneu infer_batch returned {len(wavs)} clips for {len(texts)} texts")
     sr = int(getattr(engine, "sample_rate", 48000))
     tcfg = _conf.get().get("tts", {})
     for text, wav, path in zip(texts, wavs, output_paths):

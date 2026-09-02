@@ -146,3 +146,28 @@ def test_fit_audio_batch_and_serial_agree(tmp_path):
     fitter.fit_audio(b, synth, str(tmp_path / "b"), FCFG, synth_batch=synth_batch)
     assert [(round(u.tts_dur, 3), u.over_s, u.strategy) for u in a] == \
         [(round(u.tts_dur, 3), u.over_s, u.strategy) for u in b]
+
+
+def test_fit_audio_batch_raises_when_synth_batch_returns_too_few_paths(tmp_path):
+    units = fitter.build_units(_segs(), [1.0, 5.15, 7.6], {}, "nam-1")
+    synth, _ = _fake_synth(tmp_path)
+
+    def short_synth_batch(texts, voice, paths):
+        sf.write(paths[0], np.zeros(100, dtype=np.float32), 44100)
+        return [paths[0]]   # one fewer than requested
+
+    with pytest.raises(RuntimeError):
+        fitter.fit_audio(units, synth, str(tmp_path), FCFG, synth_batch=short_synth_batch)
+
+
+def test_fit_audio_batch_chunks_large_groups(tmp_path):
+    a = fitter.build_units(_segs(), [2.6, 5.15, 7.6], {}, "nam-1")
+    b = fitter.build_units(_segs(), [2.6, 5.15, 7.6], {}, "nam-1")
+    synth, _ = _fake_synth(tmp_path / "s")
+    synth_batch, bcalls = _fake_batch_synth(tmp_path / "b")
+    (tmp_path / "s").mkdir(); (tmp_path / "b").mkdir()
+    fitter.fit_audio(a, synth, str(tmp_path / "s"), FCFG)
+    fitter.fit_audio(b, synth, str(tmp_path / "b"), FCFG | {"batch_chunk": 2}, synth_batch=synth_batch)
+    assert [len(c[0]) for c in bcalls] == [2, 1]   # one voice, 3 units, chunked 2 then 1
+    assert [(round(u.tts_dur, 3), u.over_s, u.strategy) for u in a] == \
+        [(round(u.tts_dur, 3), u.over_s, u.strategy) for u in b]

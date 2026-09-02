@@ -144,22 +144,33 @@ def fit_audio(
     `fcfg` is accepted for interface symmetry with `fit_text`.
 
     When `synth_batch` is given, units are grouped by voice (first-appearance
-    order) and synthesized one `synth_batch` call per group (GPU static
-    batching); otherwise each unit is synthesized one at a time via `synth`.
-    Either way, measurement (`tts_dur`/`over_s`/`strategy`) is identical.
+    order), split into chunks of at most `fcfg["batch_chunk"]` units, and
+    synthesized one `synth_batch` call per chunk (GPU static batching);
+    otherwise each unit is synthesized one at a time via `synth`. Either way,
+    measurement (`tts_dur`/`over_s`/`strategy`) is identical.
     """
-    _ = fcfg
     os.makedirs(out_dir, exist_ok=True)
     if synth_batch is not None:
+        batch_chunk = int(fcfg.get("batch_chunk", 32))
         groups: dict[str, list[DubUnit]] = {}
         for unit in units:
             groups.setdefault(unit.voice, []).append(unit)
+        done = 0
         for voice, group in groups.items():
-            paths = [str(Path(out_dir) / f"seg_{u.seg_id:05d}.wav") for u in group]
-            out_paths = synth_batch([u.text for u in group], voice, paths)
-            for unit, path in zip(group, out_paths):
-                unit.tts_path = path
-            print(f"      [fit] phase B: batch {voice} {len(group)} units")
+            for start in range(0, len(group), batch_chunk):
+                chunk = group[start:start + batch_chunk]
+                paths = [str(Path(out_dir) / f"seg_{u.seg_id:05d}.wav") for u in chunk]
+                out_paths = synth_batch([u.text for u in chunk], voice, paths)
+                if len(out_paths) != len(chunk):
+                    raise RuntimeError(
+                        f"synth_batch returned {len(out_paths)} paths for {len(chunk)} texts (voice={voice!r})"
+                    )
+                for unit, path in zip(chunk, out_paths):
+                    if not os.path.exists(path):
+                        raise RuntimeError(f"synth_batch did not write expected output {path!r} (voice={voice!r})")
+                    unit.tts_path = path
+                done += len(chunk)
+                print(f"      [fit] phase B: {done}/{len(units)} synthesized (batch {voice})")
     else:
         for unit in units:
             path = str(Path(out_dir) / f"seg_{unit.seg_id:05d}.wav")
