@@ -3414,3 +3414,231 @@ Run: `uv run python -m pytest -q` → toàn bộ pass (+7).
 git add pipeline/transcriber.py pipeline/captions.py pipeline/subtitles.py pipeline/orchestrator.py pipeline/merger.py resume_from_segments.py config/default.yaml README.md tests/test_subtitles_cues.py tests/test_transcriber_words.py tests/test_orchestrator_subtitles.py
 git commit -m "feat(subtitles): word-timed cues (≤2 lines, ≤6 s) for source subtitles; burn style"
 ```
+
+---
+
+### Task 17: TTS theo batch trên GPU (`infer_batch`) — giảm stage TTS ~5×
+
+**Yêu cầu user (2026-09-02):** "tiến hành tối ưu và tăng tốc". Đo được: VieNeu `infer` từng câu RTF 0,38; `infer_batch` 16 câu RTF 0,06. Trên video 79 phút (529 unit) stage TTS mất ~25 phút → mục tiêu ~5 phút.
+
+**Files:**
+- Modify: `pipeline/tts_vieneu.py` (thêm `synthesize_batch`), `pipeline/tts.py` (thêm `make_batch_synthesizer`), `pipeline/fitter.py` (`fit_audio(..., synth_batch=None)`), `pipeline/orchestrator.py` (truyền `synth_batch`), `config/default.yaml` (`vieneu.batch_tts`)
+- Test: `tests/test_tts_vieneu.py` (+2), `tests/test_fitter.py` (+2), `tests/test_orchestrator_fit.py` (+1 patch)
+
+**Interfaces:**
+- `tts_vieneu.synthesize_batch(texts: list[str], voice: str, output_paths: list[str], client, language="vi") -> list[str]` — một lần `engine.infer_batch(prepared_texts, voice=name, temperature=…, top_k=…, top_p=…, repetition_penalty=…, apply_watermark=…)` dưới `_LOCK`; mỗi kết quả ghi 44,1 kHz mono + tail silence theo quy tắc câu (giống `synthesize_segment`); `len(texts) == len(output_paths)`. SDK đã xác minh: `infer_batch(texts, ref_audio=None, voice=None, denoise=True, use_ref_codes=True, temperature=0.8, top_k=25, top_p=0.95, max_new_frames=300, repetition_penalty=1.2, repetition_window=64, max_chars=256, apply_watermark=True, batch_size=None) -> list[np.ndarray]`.
+- `tts.make_batch_synthesizer(language, emotion=None) -> Callable[[list[str], str, list[str]], list[str]] | None` — trả `None` nếu backend không có `synthesize_batch` hoặc `vieneu.batch_tts` false.
+- `fitter.fit_audio(units, synth, out_dir, fcfg, synth_batch=None)` — nếu `synth_batch`: gom unit theo `voice` (giữ thứ tự xuất hiện), gọi `synth_batch(texts, voice, paths)` từng nhóm, rồi đo như cũ; nếu không: vòng lặp từng unit như hiện tại. Kết quả (`tts_path`, `tts_dur`, `over_s`, `strategy`) giống hệt hai đường.
+- Config: `vieneu.batch_tts: true` (mặc định; trên CPU SDK tự chạy tuần tự nên vô hại).
+
+- [ ] **Step 1: Test thất bại**
+
+`tests/test_tts_vieneu.py` — mở rộng `FakeEngine` với `infer_batch(self, texts, voice=None, **kwargs)` trả `[self._sine() for _ in texts]` và ghi `self.batch_calls.append(dict(texts=list(texts), voice=voice, **kwargs))`; thêm:
+
+```python
+def test_synthesize_batch_writes_all_files_with_one_engine_call(env, tmp_path):
+    engine = FakeEngine(seconds=1.0)
+    paths = [str(tmp_path / f"b{i}.wav") for i in range(3)]
+    out = tts_vieneu.synthesize_batch(["Câu một.", "Câu hai", "Câu ba."], "Phạm Tuyên", paths, engine, language="vi")
+    assert out == paths and len(engine.batch_calls) == 1 and engine.calls == []
+    assert engine.batch_calls[0]["voice"] == "Phạm Tuyên" and engine.batch_calls[0]["texts"][1] == "Câu hai"
+    durs = [sf.info(p).duration for p in paths]
+    assert durs[0] == pytest.approx(1.25, abs=0.03) and durs[1] == pytest.approx(1.12, abs=0.03)   # sentence tail 250 ms vs 120 ms
+    assert all(sf.info(p).samplerate == 44100 and sf.info(p).channels == 1 for p in paths)
+
+
+def test_make_batch_synthesizer_none_when_disabled(env, monkeypatch):
+    cfg = pipeline_config.get()
+    monkeypatch.setitem(cfg["models"], "tts", {"provider": "vieneu", "model": "vieneu-v3-turbo"})
+    monkeypatch.setattr(tts_vieneu, "get_shared_tts", lambda: FakeEngine())
+    assert callable(tts.make_batch_synthesizer(language="vi"))
+    monkeypatch.setitem(cfg["vieneu"], "batch_tts", False)
+    assert tts.make_batch_synthesizer(language="vi") is None
+```
+
+`tests/test_fitter.py` — thêm:
+
+```python
+def _fake_batch_synth(tmp_path):
+    calls = []
+
+    def synth_batch(texts, voice, paths):
+        calls.append((list(texts), voice, list(paths)))
+        for text, path in zip(texts, paths):
+            sf.write(path, np.zeros(int(44100 * 0.2 * len(text.split())), dtype=np.float32), 44100)
+        return list(paths)
+
+    return synth_batch, calls
+
+
+def test_fit_audio_uses_batch_synth_grouped_by_voice(tmp_path):
+    units = fitter.build_units(_segs(), [1.0, 5.15, 7.6], {"SPEAKER_00": "nam-1"}, "nam-1")
+    units[1].voice = "nu-1"
+    units[0].text = "a b c d e f g h"
+    synth, calls = _fake_synth(tmp_path)
+    synth_batch, bcalls = _fake_batch_synth(tmp_path)
+    fitter.fit_audio(units, synth, str(tmp_path), FCFG, synth_batch=synth_batch)
+    assert calls == []                                   # per-unit synth not used
+    assert [(c[1], len(c[0])) for c in bcalls] == [("nam-1", 2), ("nu-1", 1)]
+    assert units[0].strategy == "over" and units[0].over_s == pytest.approx(0.6, abs=0.02)
+    assert all(Path(u.tts_path).exists() for u in units)
+
+
+def test_fit_audio_batch_and_serial_agree(tmp_path):
+    a = fitter.build_units(_segs(), [2.6, 5.15, 7.6], {}, "nam-1")
+    b = fitter.build_units(_segs(), [2.6, 5.15, 7.6], {}, "nam-1")
+    synth, _ = _fake_synth(tmp_path / "s")
+    synth_batch, _ = _fake_batch_synth(tmp_path / "b")
+    (tmp_path / "s").mkdir(); (tmp_path / "b").mkdir()
+    fitter.fit_audio(a, synth, str(tmp_path / "s"), FCFG)
+    fitter.fit_audio(b, synth, str(tmp_path / "b"), FCFG, synth_batch=synth_batch)
+    assert [(u.tts_dur, u.over_s, u.strategy) for u in a] == pytest.approx([(u.tts_dur, u.over_s, u.strategy) for u in b]) if False else \
+        [(round(u.tts_dur, 3), u.over_s, u.strategy) for u in a] == [(round(u.tts_dur, 3), u.over_s, u.strategy) for u in b]
+```
+
+`tests/test_orchestrator_fit.py`: thêm `patch("pipeline.orchestrator.make_batch_synthesizer", return_value=None)` vào chuỗi patch hiện có (giữ đường serial trong test).
+
+- [ ] **Step 2: Chạy test → FAIL** (`AttributeError: synthesize_batch`, `make_batch_synthesizer`, `TypeError: fit_audio() got an unexpected keyword argument 'synth_batch'`).
+
+- [ ] **Step 3: Code**
+
+`pipeline/tts_vieneu.py`:
+
+```python
+def synthesize_batch(
+    texts: list[str], voice: str, output_paths: list[str], client: Any, language: str = "vi",
+) -> list[str]:
+    """Synthesize many segments in one engine call (GPU static batching); same output format as synthesize_segment."""
+    if len(texts) != len(output_paths):
+        raise ValueError("texts and output_paths must have the same length")
+    if not texts:
+        return []
+    engine = client if client is not None else get_shared_tts()
+    cfg = _vcfg()
+    prepared = [_prepare_text(t, language, cfg) for t in texts]
+    with _LOCK:
+        name = _resolve_voice(engine, voice)
+        wavs = engine.infer_batch(
+            prepared, voice=name,
+            temperature=float(cfg.get("temperature", 0.8)), top_k=int(cfg.get("top_k", 25)),
+            top_p=float(cfg.get("top_p", 0.95)), repetition_penalty=float(cfg.get("repetition_penalty", 1.2)),
+            apply_watermark=bool(cfg.get("watermark", True)),
+        )
+    sr = int(getattr(engine, "sample_rate", 48000))
+    tcfg = _conf.get().get("tts", {})
+    for text, wav, path in zip(texts, wavs, output_paths):
+        _write_44k_mono(wav, sr, path)
+        _append_silence(path, _tail_ms(text, tcfg))
+    return list(output_paths)
+```
+
+Tách quy tắc tail thành `_tail_ms(text, tcfg)` dùng chung với `synthesize_segment`.
+
+`pipeline/tts.py`:
+
+```python
+def make_batch_synthesizer(language: str = "en", emotion: str | None = None):
+    """Return `synth_batch(texts, voice, out_paths) -> out_paths`, or None when the backend cannot batch."""
+    _ = emotion
+    provider = get_tts_provider()
+    backend = _backend(provider)
+    if not hasattr(backend, "synthesize_batch"):
+        return None
+    if provider == "vieneu" and not _conf.get().get("vieneu", {}).get("batch_tts", True):
+        return None
+    client = _make_client(provider)
+
+    def _synth_batch(texts: list[str], voice: str, out_paths: list[str]) -> list[str]:
+        return backend.synthesize_batch(texts, voice, out_paths, client, language)
+
+    return _synth_batch
+```
+
+`pipeline/fitter.py::fit_audio(units, synth, out_dir, fcfg, synth_batch=None)`: nếu `synth_batch`: `groups: dict[str, list[DubUnit]]` theo thứ tự xuất hiện; với mỗi voice: `paths = [out_dir/seg_{id:05d}.wav]`, gọi `synth_batch([u.text…], voice, paths)`, gán `tts_path`; in `[fit] phase B: batch <voice> n units`. Sau đó vòng đo chung (tts_dur/over_s/strategy) cho mọi unit (dùng chung cho cả 2 đường — tách thành `_measure(units)`).
+
+`pipeline/orchestrator.py`: `synth_batch = make_batch_synthesizer(language=lang_code, emotion=style.tts_emotion)`; `fitter.fit_audio(units, synth, str(tts_dir), fit_cfg, synth_batch=synth_batch)`; import `make_batch_synthesizer` từ `.tts`.
+
+`config/default.yaml` khối `vieneu`: `batch_tts: true    # use infer_batch (GPU static batching, ~6× faster TTS); ignored on CPU`.
+
+- [ ] **Step 4: Chạy test, commit** — `uv run python -m pytest -q` → pass (+5).
+
+```bash
+git add pipeline/tts_vieneu.py pipeline/tts.py pipeline/fitter.py pipeline/orchestrator.py config/default.yaml tests/test_tts_vieneu.py tests/test_fitter.py tests/test_orchestrator_fit.py
+git commit -m "perf(tts): batch VieNeu synthesis in the fitter (infer_batch, grouped by voice)"
+```
+
+---
+
+### Task 18: Dịch song song + Ollama `NUM_PARALLEL`, burn-in nhanh hơn
+
+**Files:**
+- Modify: `pipeline/translator.py` (`translate_segments` chạy nhiều batch đồng thời), `config/default.yaml` (`translation.parallel_batches: 1`), `config/local_gpu.yaml` (`parallel_batches: 2`, header `OLLAMA_NUM_PARALLEL=2`), `config/local_mac.yaml` (giữ 1), `README.md` (ghi chú), `pipeline/merger.py::burn_subtitles` (`-c:v libx264 -preset veryfast -crf 23`)
+- Test: `tests/test_translator_parallel.py`
+
+**Interfaces:** không đổi chữ ký; `translation.parallel_batches` (int ≥ 1).
+
+- [ ] **Step 1: Test thất bại** — `tests/test_translator_parallel.py`:
+
+```python
+import json
+import threading
+import time
+from types import SimpleNamespace
+
+from pipeline import config as pipeline_config
+from pipeline import translator
+from pipeline.transcriber import Segment
+
+
+class SlowFakeClient:
+    """Each call sleeps 0.2 s and echoes numbered translations; records max concurrency."""
+
+    def __init__(self):
+        self.active = 0; self.max_active = 0; self.lock = threading.Lock()
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        with self.lock:
+            self.active += 1; self.max_active = max(self.max_active, self.active)
+        time.sleep(0.2)
+        user = kwargs["messages"][1]["content"]
+        n = user.count("\n[")  # numbered lines
+        with self.lock:
+            self.active -= 1
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps({"translations": [f"vi{i}" for i in range(n)]})))], usage=None)
+
+
+def test_parallel_batches_preserve_order_and_run_concurrently(monkeypatch):
+    cfg = pipeline_config.load()
+    monkeypatch.setitem(cfg["translation"], "batch_size", 2)
+    monkeypatch.setitem(cfg["translation"], "parallel_batches", 3)
+    segs = [Segment(id=i, start=i, end=i + 1, text=f"s{i}") for i in range(6)]
+    client = SlowFakeClient()
+    t0 = time.time()
+    out = translator.translate_segments(segs, "Vietnamese", client)
+    assert [s.id for s in out] == list(range(6)) and [s.source_text for s in out] == [f"s{i}" for i in range(6)]
+    assert client.max_active >= 2
+    assert time.time() - t0 < 0.55           # 3 batches in parallel, not 0.6 s serial
+
+
+def test_parallel_batches_default_is_serial(monkeypatch):
+    cfg = pipeline_config.load()
+    monkeypatch.setitem(cfg["translation"], "batch_size", 2)
+    segs = [Segment(id=i, start=i, end=i + 1, text=f"s{i}") for i in range(4)]
+    client = SlowFakeClient()
+    translator.translate_segments(segs, "Vietnamese", client)
+    assert client.max_active == 1
+```
+
+(Lưu ý: `_try_batch` đếm số dòng đánh số bằng `numbered_segments`; fake đếm `"\n["` — nếu format prompt khác, sửa cách đếm trong fake cho khớp, không sửa translator.)
+
+- [ ] **Step 2: Chạy test → FAIL** (max_active == 1, thời gian ≥ 0.6 s).
+
+- [ ] **Step 3: Code** — trong `translate_segments`: dựng danh sách `(i, batch, budgets_slice)`; nếu `parallel_batches <= 1` giữ vòng lặp cũ; ngược lại `ThreadPoolExecutor(max_workers=parallel)` map `_translate_batch` theo index, ghép kết quả theo thứ tự, in tiến độ khi từng batch xong. `config/default.yaml` `translation.parallel_batches: 1  # >1 needs OLLAMA_NUM_PARALLEL≥N on the server (each slot costs KV cache)`; `local_gpu.yaml` `parallel_batches: 2` + header `OLLAMA_NUM_PARALLEL=2`. `burn_subtitles`: thêm `"-c:v", "libx264", "-preset", "veryfast", "-crf", "23"` trước `-c:a copy`. README: 1 câu về `parallel_batches`/`OLLAMA_NUM_PARALLEL`.
+
+- [ ] **Step 4: Chạy test, commit** — `uv run python -m pytest -q` → pass (+2).
+
+```bash
+git add pipeline/translator.py pipeline/merger.py config/default.yaml config/local_gpu.yaml README.md tests/test_translator_parallel.py
+git commit -m "perf(translate): concurrent translation batches; faster subtitle burn-in"
+```
