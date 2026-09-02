@@ -84,6 +84,7 @@ class Segment:
     end: float
     text: str
     speaker: str = "SPEAKER_00"
+    source_text: str = ""   # original-language text once `text` holds a translation
 
 
 def _deduplicate_fragment(prev_text: str, frag_text: str) -> str:

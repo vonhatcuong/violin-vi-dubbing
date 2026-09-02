@@ -75,3 +75,6 @@ exclude = ["api/static/demo"]
 "run_api.py" = "run_api.py"
 "config" = "config"
 ".claude" = ".claude"     # Claude Code skill files — copied to ~/.claude/skills/ by `violin --install-skill`
+
+[dependency-groups]
+dev = ["pytest>=8.0"]

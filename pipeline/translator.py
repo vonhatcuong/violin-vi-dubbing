@@ -295,6 +295,9 @@ def translate_segments(
         )
 
     return [
-        Segment(id=s.id, start=s.start, end=s.end, text=t)
+        Segment(
+            id=s.id, start=s.start, end=s.end, text=t,
+            speaker=s.speaker, source_text=s.text,
+        )
         for s, t in zip(segments, translated_texts)
     ]
