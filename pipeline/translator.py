@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from together import (
@@ -312,17 +313,39 @@ def translate_segments(
     budgets: list[tuple[float, int]] | None = None,
 ) -> list[Segment]:
     """Translate all segments, batching to stay within LLM context limits."""
-    translated_texts: list[str] = []
+    tcfg = _tcfg()
+    batch_size = tcfg["batch_size"]
+    parallel_batches = tcfg.get("parallel_batches", 1)
 
-    batch_size = _tcfg()["batch_size"]
+    batches = []
     for i in range(0, len(segments), batch_size):
         batch = segments[i : i + batch_size]
         texts = [s.text for s in batch]
         batch_budgets = budgets[i : i + batch_size] if budgets else None
-        print(f"      Translating segments {i + 1}–{i + len(batch)} / {len(segments)}...")
-        translated_texts.extend(
-            _translate_batch(texts, target_language, source_language, client, tracker, style_directives, style_temperature, batch_budgets)
-        )
+        batches.append((i, texts, batch_budgets))
+
+    translated_texts: list[str] = [""] * len(segments)
+
+    if parallel_batches <= 1:
+        for i, texts, batch_budgets in batches:
+            print(f"      Translating segments {i + 1}–{i + len(texts)} / {len(segments)}...")
+            translated_texts[i : i + len(texts)] = _translate_batch(
+                texts, target_language, source_language, client, tracker,
+                style_directives, style_temperature, batch_budgets,
+            )
+    else:
+        with ThreadPoolExecutor(max_workers=parallel_batches) as executor:
+            future_to_batch = {
+                executor.submit(
+                    _translate_batch, texts, target_language, source_language, client,
+                    tracker, style_directives, style_temperature, batch_budgets,
+                ): (i, texts)
+                for i, texts, batch_budgets in batches
+            }
+            for future in as_completed(future_to_batch):
+                i, texts = future_to_batch[future]
+                translated_texts[i : i + len(texts)] = future.result()
+                print(f"      Translated segments {i + 1}–{i + len(texts)} / {len(segments)}...")
 
     return [
         Segment(

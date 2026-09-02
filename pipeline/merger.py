@@ -729,6 +729,7 @@ def burn_subtitles(input_video_path: str, subtitle_path: str, output_video_path:
         FFMPEG_EXE,
         "-i", input_video_path,
         "-vf", vf,
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
         "-c:a", "copy",
         "-movflags", "+faststart",
         "-y", output_video_path,

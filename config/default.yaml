@@ -36,6 +36,7 @@ transcription:
 # ── 2. Translation ──────────────────────────────────────────
 translation:
   batch_size: 64
+  parallel_batches: 1  # >1 needs OLLAMA_NUM_PARALLEL≥N on the server (each slot costs KV cache)
   max_retries: 3
   temperature: 0.3
   response_format: json_schema   # json_schema (OpenAI/Together) | json_object (Ollama, vLLM — plain JSON mode)
