@@ -211,7 +211,9 @@ uvx --from "yt-dlp>=2026.8.19" yt-dlp -f "bv*[ext=mp4][vcodec^=avc1][height<=108
 rsync -a --partial -e "ssh -p <port>" <id>.mp4 root@<ip>:/workspace/samples/<khoá>/<id>.mp4.part \
   && ssh -p <port> root@<ip> "mv /workspace/samples/<khoá>/<id>.mp4.part /workspace/samples/<khoá>/<id>.mp4"
 ```
-Script mẫu chạy hàng loạt: `scripts/ops/fetch_push_sources_example.sh`; script batch trên server bỏ qua bước tải khi file nguồn đã có.
+Script mẫu chạy hàng loạt: `scripts/ops/fetch_push_sources_example.sh` (tải + đẩy), `scripts/ops/fetch_push_retry_example.sh`
+(chạy lại tối đa 3 lượt cho bài bị 403 tạm thời) và, phía server, `scripts/ops/batch_pushed_sources_example.sh` — xử lý bài nào đã có
+nguồn trước, lặp đến khi đủ (không chặn cả hàng vì một bài chưa tải được).
 
 ### 5.2 Lệnh chạy (tách tiến trình khỏi phiên SSH)
 
