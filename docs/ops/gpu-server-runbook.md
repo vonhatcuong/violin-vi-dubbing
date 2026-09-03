@@ -127,6 +127,22 @@ print("models cached under", __import__("os").environ["HF_HOME"])
 EOF
 ```
 
+## 2.6 Model dùng trong pipeline: nguồn tải, dung lượng, license, chạy offline
+
+| Model | Vai trò | Nguồn tải (tự động lần đầu) | Dung lượng | License | Nơi cache |
+|---|---|---|---|---|---|
+| `gemma4:31b` (Q4) | Dịch EN→VI, rút gọn câu | `ollama pull gemma4:31b` (registry.ollama.ai) | 19 GB | Gemma Terms | `$OLLAMA_MODELS` = `/workspace/ollama` |
+| `gemma4:12b` | thay thế khi chỉ có 1 GPU 24 GB | `ollama pull gemma4:12b` | ~8 GB | Gemma Terms | như trên |
+| Whisper large-v3 (CTranslate2) | ASR tiếng Anh, word timestamps | HF `Systran/faster-whisper-large-v3` qua `faster-whisper` | 2,9 GB | MIT | `$HF_HOME/hub/models--Systran--faster-whisper-large-v3` |
+| VieNeu-TTS v3 Turbo | TTS tiếng Việt, 20 giọng preset | HF `pnnbao-ump/VieNeu-TTS-v3-Turbo` qua package `vieneu` | 305 MB | Apache-2.0 | `$HF_HOME/hub/models--pnnbao-ump--VieNeu-TTS-v3-Turbo` |
+| MOSS Audio Tokenizer Nano | codec âm thanh của VieNeu (tự kéo theo) | HF `OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano` | 85 MB | Apache-2.0 | `$HF_HOME/hub/models--OpenMOSS-Team--MOSS-Audio-Tokenizer-Nano` |
+| ECAPA-TDNN | embedding người nói (`--speakers`) | HF `speechbrain/spkrec-ecapa-voxceleb` qua `speechbrain` | 85 MB | Apache-2.0 | `$HF_HOME/hub/models--speechbrain--spkrec-ecapa-voxceleb` |
+| pyannote (tuỳ chọn) | diarization thay ECAPA (`diarization.backend: pyannote`) | HF `pyannote/speaker-diarization-community-1`, **gated**: cần HF token (`diarization.hf_token_env`) | ~1 GB | CC-BY-4.0 | `$HF_HOME` |
+
+Không dùng dịch vụ cloud nào lúc chạy. Sau khi đã cache đủ, có thể ép offline hoàn toàn: `export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`
+(Ollama vốn không gọi ra ngoài). Nếu server không có mạng ra Hugging Face, tải trên máy khác rồi rsync nguyên thư mục
+`$HF_HOME/hub/models--*` sang (§7). Kiểm tra cache đủ: `ls $HF_HOME/hub` phải có 4 thư mục `models--` ở trên.
+
 ## 3. Gán GPU bằng UUID (bắt buộc khi có 2 card giống nhau)
 
 `CUDA_VISIBLE_DEVICES=0` / `=1` **không ổn định**: mỗi tiến trình có thể đánh số 2 card RTX 3090
@@ -184,6 +200,18 @@ cd /workspace/samples
 ```
 
 Gặp `HTTP Error 403` → `uv pip install -U yt-dlp` rồi chạy lại đúng lệnh trên (AV1 format 399 hay bị chặn; ép avc1).
+
+Gặp `Sign in to confirm you're not a bot` → YouTube đã chặn IP datacenter của server (xảy ra sau ~45 video trong một ngày).
+Không dùng cookie tài khoản trên server. Thay vào đó tải trên máy cá nhân (IP dân dụng) rồi đẩy lên:
+
+```bash
+# máy cá nhân — cần yt-dlp mới (>= 2026.08); venv cũ có thể ghim bản cũ, dùng uvx cho chắc
+uvx --from "yt-dlp>=2026.8.19" yt-dlp -f "bv*[ext=mp4][vcodec^=avc1][height<=1080]+ba[ext=m4a]/b" --merge-output-format mp4 \
+  --extractor-args "youtube:player_client=web_safari,android,default" -o "<id>.mp4" -- "https://www.youtube.com/watch?v=<id>"
+rsync -a --partial -e "ssh -p <port>" <id>.mp4 root@<ip>:/workspace/samples/<khoá>/<id>.mp4.part \
+  && ssh -p <port> root@<ip> "mv /workspace/samples/<khoá>/<id>.mp4.part /workspace/samples/<khoá>/<id>.mp4"
+```
+Script mẫu chạy hàng loạt: `scripts/ops/fetch_push_sources_example.sh`; script batch trên server bỏ qua bước tải khi file nguồn đã có.
 
 ### 5.2 Lệnh chạy (tách tiến trình khỏi phiên SSH)
 
@@ -265,6 +293,19 @@ rồi mỗi bài một rsync — mở nhiều kết nối SSH liên tiếp sẽ 
 sau khi đã sao lưu kết quả ở nơi thứ hai (bài học 2026-09-02: một lỗi xoá thư mục ở máy cá nhân làm mất 25 bài đã dọn trên server):
 `rm -f /workspace/out_<khoá>/<tag>/{*_vi.mp4,*_720p.mp4,*_original.m4a} /workspace/samples/<khoá>/<id>.mp4`.
 
+## 6b. Đưa kết quả lên Google Drive (gws)
+
+```bash
+gws auth login                                   # OAuth trình duyệt; token hết hạn thì chạy lại (lỗi invalid_grant)
+gws drive files create --json '{"name":"Violin Dubbing EN-VI","mimeType":"application/vnd.google-apps.folder"}'   # lấy id folder
+gws drive +upload "<file>.mp4" --parent <FOLDER_ID> --name "MIT 18.06 - 05 - <tiêu đề> [vi dub 720p].mp4"
+```
+Script mẫu `scripts/ops/drive_upload_loop_example.sh`: tự tạo 3 folder con, upload video 720p + `.srt` của mọi bài đã về máy,
+đặt tên `<Khoá> - <NN> - <tiêu đề YouTube> [vi dub 720p].mp4` / `[en].srt`, và đặt `modifiedTime` theo số bài
+(`files.update {"modifiedTime": ...}`) để sắp xếp theo "Last modified" cũng đúng thứ tự. Tên đọc được cho cây thư mục ở máy:
+`scripts/ops/rename_local_example.py` (chỉ `rename` trong cùng thư mục, không ghi đè, ghi manifest để hoàn tác).
+Drive hiện tại: folder gốc `1L17xYhz2_xWnlIFtmf7rN1CApr39yjh0` (MIT `1DLfjZQHWeu7HVjGXQ6N1apI9Z5GkChl1`, CS336 `1VOwlSrArHJKd68Le5Dh7ZzX7QVB72sI_`, Hamel `1h-t-IfyBrKu8Y1-VugX5NZgJkUpQovil`).
+
 ## 7. Chuyển sang server mới: sao lưu gì, tải lại gì
 
 | Mục | Kích thước | Sao lưu hay tải lại? |
@@ -293,6 +334,9 @@ kỳ vọng ~1 phút, `voices.json` có 2 giọng khác nhau, `fit.units.json` k
 | `--speakers auto` ra 3–4 speaker trong clip 2 người | câu 0,5 s cho embedding yếu | `diarization.min_cluster_segments/seconds` (mặc định 3 / 3.0) tự gộp |
 | `ModuleNotFoundError: torch/speechbrain` khi `--speakers` | thiếu extras GPU | `uv sync --extra local-gpu` + torch cu128 (§2.2) |
 | yt-dlp `HTTP Error 403` | format AV1 / client cũ | nâng cấp yt-dlp, ép avc1 + `player_client` (§5.1) |
+| yt-dlp `Sign in to confirm you're not a bot` | YouTube chặn IP datacenter | tải trên máy cá nhân rồi rsync lên (§5.1) |
+| `gws` báo `invalid_grant` | token OAuth hết hạn | `gws auth login` |
+| Đĩa server đầy dù đã dọn output | rò `/tmp/vidmerge_*`, `/tmp/audiochunk_*` (đã vá ở 6c175b4) | cập nhật code; dọn `find /tmp -maxdepth 1 -name 'vidmerge_*' -mmin +30 -exec rm -rf {} +` |
 | Ollama không nhận key | không cần | stack local không dùng `.env`; đừng đặt `OLLAMA_API_KEY` trỏ cloud |
 
 ## 9. Ghi chú vận hành trên Vast.ai
